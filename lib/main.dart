@@ -1,8 +1,12 @@
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:ui';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 void main() {
   runApp(MaterialApp(
@@ -19,6 +23,7 @@ class RoutinePage extends StatefulWidget {
 }
 
 class _RoutinePageState extends State<RoutinePage> {
+  final GlobalKey _saveFabKey = GlobalKey();
   final List<String> days = [
     'Sunday',
     'Monday',
@@ -27,10 +32,8 @@ class _RoutinePageState extends State<RoutinePage> {
     'Thursday',
   ];
 
-  List<String> times = ['8:30am-10:00am'];
-  Map<String, List<RoutineCellData>> routine = {
-    '8:30am-10:00am': List.generate(5, (_) => RoutineCellData('', '')),
-  };
+  List<String> times = [];
+  Map<String, List<RoutineCellData>> routine = {};
 
   final List<String> allTimes = [
     '8:30am-10:00am',
@@ -50,12 +53,120 @@ class _RoutinePageState extends State<RoutinePage> {
 
   final GlobalKey _routineKey = GlobalKey();
 
+  @override
+  void initState() {
+    super.initState();
+    _loadRoutineData();
+  }
+
+  Future<void> _saveRoutineToPdf() async {
+    final pdfDoc = pw.Document();
+
+    pdfDoc.addPage(
+      pw.Page(
+        build: (pw.Context context) {
+          return pw.Table(
+            border: pw.TableBorder.all(),
+            children: [
+              pw.TableRow(
+                children: [
+                  pw.Container(
+                    padding: pw.EdgeInsets.all(4),
+                    child: pw.Text('Day/Time', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                  ),
+                  ...times.map((t) => pw.Container(
+                    padding: pw.EdgeInsets.all(4),
+                    child: pw.Text(t, style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                  )),
+                ],
+              ),
+              ...days.asMap().entries.map((entry) {
+                final dayIdx = entry.key;
+                final day = entry.value;
+                return pw.TableRow(
+                  children: [
+                    pw.Container(
+                      padding: pw.EdgeInsets.all(4),
+                      child: pw.Text(day, style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                    ),
+                    ...times.map((time) {
+                      final cell = routine[time]![dayIdx];
+                      String cellText = '';
+                      if (cell.course.isNotEmpty) {
+                        cellText = cell.course;
+                        if (cell.room.isNotEmpty) cellText += '\n${cell.room}';
+                        if (cell.friends.isNotEmpty) cellText += '\n${cell.friends.length} friend${cell.friends.length > 1 ? 's' : ''}';
+                      } else if (cell.friends.isNotEmpty) {
+                        cellText = '${cell.friends.length} friend${cell.friends.length > 1 ? 's' : ''}';
+                      }
+                      return pw.Container(
+                        padding: pw.EdgeInsets.all(4),
+                        child: pw.Text(cellText),
+                      );
+                    }),
+                  ],
+                );
+              }),
+            ],
+          );
+        },
+      ),
+    );
+
+    await Printing.sharePdf(
+      bytes: await pdfDoc.save(),
+      filename: 'routine_${DateTime.now().millisecondsSinceEpoch}.pdf',
+    );
+  }
+
+  Future<void> _loadRoutineData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final timesStr = prefs.getString('routine_times');
+    final routineStr = prefs.getString('routine_data');
+    if (!mounted) return;
+    if (timesStr != null && routineStr != null) {
+      final loadedTimes = List<String>.from(json.decode(timesStr));
+
+      // Decompress routineStr
+      final compressedBytes = base64Decode(routineStr);
+      final decompressedBytes = zlib.decode(compressedBytes);
+      final decompressedRoutineStr = utf8.decode(decompressedBytes);
+
+      final loadedRoutineMap = json.decode(decompressedRoutineStr) as Map<String, dynamic>;
+      final loadedRoutine = <String, List<RoutineCellData>>{};
+      loadedRoutineMap.forEach((key, value) {
+        loadedRoutine[key] = (value as List)
+            .map((cell) => RoutineCellData.fromJson(cell))
+            .toList();
+      });
+      setState(() {
+        times = loadedTimes;
+        routine = loadedRoutine;
+      });
+    }
+  }
+
+  Future<void> _saveRoutineData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final timesStr = json.encode(times);
+    final routineMap = routine.map((key, value) =>
+        MapEntry(key, value.map((cell) => cell.toJson()).toList()));
+    final routineStr = json.encode(routineMap);
+    final compressedRoutine = zlib.encode(utf8.encode(routineStr));
+    final compressedRoutineBase64 = base64Encode(compressedRoutine);
+
+    await prefs.setString('routine_times', timesStr);
+    await prefs.setString('routine_data', compressedRoutineBase64);
+  }
+
   void _showAddTimeDialog() async {
     List<String> availableTimes = [
       ...allTimes.where((t) => t == 'Custom' || !times.contains(t))
     ];
     String selectedTime = availableTimes[0];
     String customTime = '';
+    int insertIndex = times.length; // default to end
+
     String? result = await showDialog<String>(
       context: context,
       builder: (context) {
@@ -93,6 +204,31 @@ class _RoutinePageState extends State<RoutinePage> {
                       },
                     ),
                   ),
+                if (selectedTime == 'Custom' || selectedTime != 'Custom')
+                  Padding(
+                    padding: EdgeInsets.only(top: 12),
+                    child: DropdownButton<int>(
+                      value: insertIndex,
+                      isExpanded: true,
+                      icon: Icon(Icons.arrow_drop_down),
+                      items: [
+                        for (int i = 0; i <= times.length; i++)
+                          DropdownMenuItem(
+                            value: i,
+                            child: Text(
+                              i == times.length
+                                  ? 'At end'
+                                  : 'Before "${times[i]}"',
+                            ),
+                          ),
+                      ],
+                      onChanged: (val) {
+                        setState(() {
+                          insertIndex = val!;
+                        });
+                      },
+                    ),
+                  ),
               ],
             ),
             actions: [
@@ -110,7 +246,7 @@ class _RoutinePageState extends State<RoutinePage> {
                     Navigator.pop(context);
                     return;
                   }
-                  Navigator.pop(context, timeToAdd);
+                  Navigator.pop(context, '$timeToAdd|$insertIndex');
                 },
                 style: ElevatedButton.styleFrom(
                   foregroundColor: Colors.black,
@@ -123,12 +259,18 @@ class _RoutinePageState extends State<RoutinePage> {
         );
       },
     );
-    if (result != null && result.isNotEmpty && !times.contains(result)) {
-      setState(() {
-        times.add(result);
-        routine[result] =
-            List.generate(days.length, (_) => RoutineCellData('', ''));
-      });
+    if (!mounted) return;
+    if (result != null && result.isNotEmpty) {
+      final parts = result.split('|');
+      final timeToAdd = parts[0];
+      final idx = int.parse(parts[1]);
+      if (!times.contains(timeToAdd)) {
+        setState(() {
+          times.insert(idx, timeToAdd);
+          routine[timeToAdd] = List.generate(days.length, (_) => RoutineCellData());
+        });
+        await _saveRoutineData();
+      }
     }
   }
 
@@ -185,68 +327,246 @@ class _RoutinePageState extends State<RoutinePage> {
         );
       },
     );
-    if (removed) setState(() {});
+    if (!mounted) return;
+    if (removed) {
+      setState(() {});
+      await _saveRoutineData();
+    }
   }
 
-  void _showEditCellDialog(int dayIdx, String time) async {
+  void _showCellDialog(int dayIdx, String time) async {
     final cell = routine[time]![dayIdx];
-    String course = cell.course;
-    String room = cell.room;
+    if (cell.isEmpty) {
+      await showDialog(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: Text('No class'),
+            content: Text('No class info for this slot.'),
+            actions: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () async {
+                      Navigator.pop(context);
+                      await _showAddClassDialog(dayIdx, time);
+                    },
+                    style: TextButton.styleFrom(foregroundColor: Colors.black),
+                    child: Text('Add Class'),
+                  ),
+                  SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () async {
+                      Navigator.pop(context);
+                      await _showAddFriendDialog(dayIdx, time);
+                    },
+                    style: TextButton.styleFrom(foregroundColor: Colors.black),
+                    child: Text('Add Friend'),
+                  ),
+                ],
+              ),
+            ],
+          );
+        },
+      );
+    } else {
+      await showDialog(
+        context: context,
+        builder: (context) {
+          return StatefulBuilder(
+            builder: (context, setStateDialog) {
+              List<Widget> infoWidgets = [];
+              if (cell.course.isNotEmpty) {
+                infoWidgets.add(
+                  ListTile(
+                    title: Text('Class'),
+                    subtitle: Text('${cell.course}\n${cell.room}'),
+                    trailing: IconButton(
+                      icon: Icon(Icons.delete, color: Colors.red),
+                      onPressed: () {
+                        routine[time]![dayIdx] = cell.copyWith(course: '', room: '');
+                        setState(() {});
+                        setStateDialog(() {});
+                        _saveRoutineData();
+                      },
+                    ),
+                  ),
+                );
+              }
+              if (cell.friends.isNotEmpty) {
+                infoWidgets.add(
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: Text('Friends:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                );
+                for (int i = 0; i < cell.friends.length; i++) {
+                  final friend = cell.friends[i];
+                  infoWidgets.add(
+                    ListTile(
+                      title: Text(friend.name),
+                      subtitle: Text('${friend.course}\n${friend.room}'),
+                      trailing: IconButton(
+                        icon: Icon(Icons.delete, color: Colors.red),
+                        onPressed: () {
+                          cell.friends.removeAt(i);
+                          setState(() {});
+                          setStateDialog(() {});
+                          _saveRoutineData();
+                        },
+                      ),
+                    ),
+                  );
+                }
+              }
+              return AlertDialog(
+                title: Text('Class Info:'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: infoWidgets,
+                  ),
+                ),
+                actions: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      if (cell.course.isEmpty)
+                        ElevatedButton(
+                          onPressed: () async {
+                            Navigator.pop(context);
+                            await _showAddClassDialog(dayIdx, time);
+                          },
+                          style: TextButton.styleFrom(foregroundColor: Colors.black),
+                          child: Text('Add Class'),
+                        ),
+                      SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          await _showAddFriendDialog(dayIdx, time);
+                        },
+                        style: TextButton.styleFrom(foregroundColor: Colors.black),
+                        child: Text('Add Friend'),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    }
+  }
+
+  Future<void> _showAddClassDialog(int dayIdx, String time) async {
+    String course = '';
+    String room = '';
     await showDialog(
       context: context,
       builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setState) => AlertDialog(
-            title: Text('Edit Class'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  decoration: InputDecoration(
-                    labelText: 'Course Name',
-                  ),
-                  controller: TextEditingController(text: course),
-                  onChanged: (val) {
-                    course = val;
-                  },
-                ),
-                SizedBox(height: 12),
-                TextField(
-                  decoration: InputDecoration(
-                    labelText: 'Room Number',
-                  ),
-                  controller: TextEditingController(text: room),
-                  onChanged: (val) {
-                    room = val;
-                  },
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                style: TextButton.styleFrom(foregroundColor: Colors.black),
-                child: Text('Cancel'),
+        return AlertDialog(
+          title: Text('Add Class'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                decoration: InputDecoration(labelText: 'Course Name'),
+                onChanged: (val) => course = val,
               ),
-              ElevatedButton(
-                onPressed: () {
-                  setState(() {
-                    routine[time]![dayIdx] = RoutineCellData(course, room);
-                  });
-                  Navigator.pop(context);
-                },
-                style: ElevatedButton.styleFrom(
-                  foregroundColor: Colors.black,
-                  backgroundColor: Colors.blue,
-                ),
-                child: Text('Save'),
+              SizedBox(height: 12),
+              TextField(
+                decoration: InputDecoration(labelText: 'Room Number'),
+                onChanged: (val) => room = val,
               ),
             ],
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              child: Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (course.trim().isNotEmpty || room.trim().isNotEmpty) {
+                  routine[time]![dayIdx] = routine[time]![dayIdx].copyWith(
+                    course: course.trim(),
+                    room: room.trim(),
+                  );
+                  setState(() {});
+                  _saveRoutineData();
+                }
+                Navigator.pop(context);
+              },
+              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              child: Text('Save'),
+            ),
+          ],
         );
       },
     );
-    setState(() {});
+  }
+
+  Future<void> _showAddFriendDialog(int dayIdx, String time) async {
+    String friendName = '';
+    String friendCourse = '';
+    String friendRoom = '';
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Add Friend'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                decoration: InputDecoration(labelText: 'Friend Name'),
+                onChanged: (val) => friendName = val,
+              ),
+              SizedBox(height: 12),
+              TextField(
+                decoration: InputDecoration(labelText: 'Course Name'),
+                onChanged: (val) => friendCourse = val,
+              ),
+              SizedBox(height: 12),
+              TextField(
+                decoration: InputDecoration(labelText: 'Room Number'),
+                onChanged: (val) => friendRoom = val,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              child: Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (friendName.trim().isNotEmpty ||
+                    friendCourse.trim().isNotEmpty ||
+                    friendRoom.trim().isNotEmpty) {
+                  final cell = routine[time]![dayIdx];
+                  cell.friends.add(FriendData(
+                    name: friendName.trim(),
+                    course: friendCourse.trim(),
+                    room: friendRoom.trim(),
+                  ));
+                  setState(() {});
+                  _saveRoutineData();
+                }
+                Navigator.pop(context);
+              },
+              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              child: Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _saveRoutineToDownloads() async {
@@ -261,13 +581,16 @@ class _RoutinePageState extends State<RoutinePage> {
       if (!downloadsDir.existsSync()) {
         throw Exception('Downloads folder not found');
       }
-      final filePath = '${downloadsDir.path}/routine_${DateTime.now().millisecondsSinceEpoch}.png';
+      final filePath =
+          '${downloadsDir.path}/routine_${DateTime.now().millisecondsSinceEpoch}.png';
       final file = File(filePath);
       await file.writeAsBytes(pngBytes);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Routine saved to Downloads: $filePath')),
       );
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to save: $e')),
       );
@@ -275,69 +598,89 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   void _showSaveOptions() async {
+    final RenderBox fabRenderBox =
+    _saveFabKey.currentContext!.findRenderObject() as RenderBox;
+    final Offset fabOffset = fabRenderBox.localToGlobal(Offset.zero);
+    final Size fabSize = fabRenderBox.size;
+
     final selected = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
-        MediaQuery.of(context).size.width,
-        MediaQuery.of(context).size.height - 100,
-        16,
-        16,
+        fabOffset.dx + fabSize.width - 170,
+        fabOffset.dy - 130,
+        fabOffset.dx + fabSize.width,
+        fabOffset.dy,
       ),
       items: [
         PopupMenuItem(
           value: 'save1',
-          child: Text('Save 1'),
+          child: Material(
+            color: Colors.green[100],
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              splashColor: Colors.green[200],
+              highlightColor: Colors.green[300],
+              onTap: () {
+                Navigator.pop(context, 'save1'); // close menu on tap
+              },
+              child: Container(
+                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.image, color: Colors.green[700]),
+                    SizedBox(width: 8),
+                    Text('Save as PNG',
+                        style: TextStyle(color: Colors.green[900])),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
         PopupMenuItem(
           value: 'save2',
-          child: Text('Save 2'),
+          child: Material(
+            color: Colors.blue[100],
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              splashColor: Colors.blue[200],
+              highlightColor: Colors.blue[300],
+              onTap: () {
+                Navigator.pop(context, 'save2');
+              },
+              child: Container(
+                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.picture_as_pdf, color: Colors.blue[700]),
+                    SizedBox(width: 8),
+                    Text('Save as PDF',
+                        style: TextStyle(color: Colors.blue[900])),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ],
+      elevation: 8,
+      color: Colors.blueGrey[900],
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
     );
+    if (!mounted) return;
     if (selected == 'save1') {
       await _saveRoutineToDownloads();
     } else if (selected == 'save2') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('you choosed save 2')),
-      );
+      await _saveRoutineToPdf();
     }
   }
 
   void _showAddOptions() async {
-    final selected = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(
-        MediaQuery.of(context).size.width,
-        MediaQuery.of(context).size.height - 100,
-        16,
-        16,
-      ),
-      items: [
-        PopupMenuItem(
-          value: 'manual',
-          child: Text('manual course'),
-        ),
-        PopupMenuItem(
-          value: 'auto',
-          child: Text('Auto Course'),
-        ),
-        PopupMenuItem(
-          value: 'faculty',
-          child: Text('faculty'),
-        ),
-      ],
-    );
-    if (selected == 'manual') {
-      _showAddTimeDialog();
-    } else if (selected == 'auto') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Auto Course')),
-      );
-    } else if (selected == 'faculty') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('faculty')),
-      );
-    }
+    _showAddTimeDialog();
   }
 
   @override
@@ -346,9 +689,10 @@ class _RoutinePageState extends State<RoutinePage> {
     final double tableWidth = dayColWidth + totalTimeColWidth;
 
     return Scaffold(
+      backgroundColor: Colors.blueGrey[900],
       appBar: AppBar(
         title: Text(
-          'Routine',
+          'Tofu Routine',
           style: TextStyle(
             color: Colors.white,
             fontWeight: FontWeight.bold,
@@ -361,7 +705,7 @@ class _RoutinePageState extends State<RoutinePage> {
         centerTitle: true,
       ),
       body: Container(
-        color: Color(0xFF263238),
+        color: Colors.grey[850],
         child: LayoutBuilder(
           builder: (context, constraints) {
             final double minWidth = constraints.maxWidth;
@@ -378,7 +722,6 @@ class _RoutinePageState extends State<RoutinePage> {
                         Container(
                           decoration: BoxDecoration(
                             color: Colors.blue[900],
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
                           ),
                           child: Row(
                             children: [
@@ -447,7 +790,7 @@ class _RoutinePageState extends State<RoutinePage> {
                                 ...times.map((t) {
                                   final cell = routine[t]![i];
                                   return GestureDetector(
-                                    onTap: () => _showEditCellDialog(i, t),
+                                    onTap: () => _showCellDialog(i, t),
                                     child: Container(
                                       width: timeColWidth,
                                       height: 60,
@@ -465,7 +808,7 @@ class _RoutinePageState extends State<RoutinePage> {
                               ],
                             ),
                           );
-                        }).toList(),
+                        }),
                       ],
                     ),
                   ),
@@ -497,6 +840,7 @@ class _RoutinePageState extends State<RoutinePage> {
               ),
               SizedBox(width: 16),
               FloatingActionButton(
+                key: _saveFabKey,
                 heroTag: 'save',
                 onPressed: _showSaveOptions,
                 backgroundColor: Colors.green[700],
@@ -513,7 +857,69 @@ class _RoutinePageState extends State<RoutinePage> {
 class RoutineCellData {
   final String course;
   final String room;
-  RoutineCellData(this.course, this.room);
+  final List<FriendData> friends;
+
+  RoutineCellData({
+    this.course = '',
+    this.room = '',
+    List<FriendData>? friends,
+  }) : friends = friends ?? [];
+
+  bool get isEmpty =>
+      course.trim().isEmpty &&
+          room.trim().isEmpty &&
+          friends.isEmpty;
+
+  RoutineCellData copyWith({
+    String? course,
+    String? room,
+    List<FriendData>? friends,
+  }) {
+    return RoutineCellData(
+      course: course ?? this.course,
+      room: room ?? this.room,
+      friends: friends ?? List<FriendData>.from(this.friends),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'course': course,
+    'room': room,
+    'friends': friends.map((f) => f.toJson()).toList(),
+  };
+
+  factory RoutineCellData.fromJson(Map<String, dynamic> json) =>
+      RoutineCellData(
+        course: json['course'] ?? '',
+        room: json['room'] ?? '',
+        friends: (json['friends'] as List<dynamic>? ?? [])
+            .map((f) => FriendData.fromJson(f as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+class FriendData {
+  final String name;
+  final String course;
+  final String room;
+
+  FriendData({
+    this.name = '',
+    this.course = '',
+    this.room = '',
+  });
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'course': course,
+    'room': room,
+  };
+
+  factory FriendData.fromJson(Map<String, dynamic> json) => FriendData(
+    name: json['name'] ?? '',
+    course: json['course'] ?? '',
+    room: json['room'] ?? '',
+  );
 }
 
 class RoutineCell extends StatelessWidget {
@@ -522,8 +928,55 @@ class RoutineCell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool isEmpty = (data.course.trim().isEmpty && data.room.trim().isEmpty);
-    if (isEmpty) {
+    if (data.course.trim().isNotEmpty) {
+      return Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            data.course,
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 15,
+            ),
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+          if (data.room.trim().isNotEmpty)
+            Text(
+              data.room,
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: 13,
+              ),
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          if (data.friends.isNotEmpty)
+            Text(
+              '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
+              style: TextStyle(
+                color: Colors.lightBlueAccent,
+                fontSize: 13,
+              ),
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+        ],
+      );
+    } else if (data.friends.isNotEmpty) {
+      return Text(
+        '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
+        style: TextStyle(
+          color: Colors.lightBlueAccent,
+          fontSize: 15,
+        ),
+        textAlign: TextAlign.center,
+      );
+    } else {
       return Text(
         '-',
         style: TextStyle(
@@ -533,32 +986,5 @@ class RoutineCell extends StatelessWidget {
         textAlign: TextAlign.center,
       );
     }
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Text(
-          data.course,
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 15,
-          ),
-          textAlign: TextAlign.center,
-          overflow: TextOverflow.ellipsis,
-          maxLines: 1,
-        ),
-        if (data.room.trim().isNotEmpty)
-          Text(
-            data.room,
-            style: TextStyle(
-              color: Colors.white70,
-              fontSize: 13,
-            ),
-            textAlign: TextAlign.center,
-            overflow: TextOverflow.ellipsis,
-            maxLines: 1,
-          ),
-      ],
-    );
   }
 }

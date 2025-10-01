@@ -1,7 +1,7 @@
 name: ewucp
 description: "A course planner for university student and friends class management"
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.3.0+1
 
 environment:
   sdk: ^3.7.2
@@ -9,13 +9,36 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  path_provider: ^2.0.15
+  path_provider: ^2.1.4
   cupertino_icons: ^1.0.8
+  shared_preferences: ^2.2.2
+  pdf: ^3.11.3
+  printing: ^5.11.0
+  flutter_native_splash: ^2.4.2
+  file_picker: ^8.1.7
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
+  plugin:
+    platforms:
+      android:
+        default_package: file_picker
+      ios:
+        default_package: file_picker
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon.png"
+
+flutter_native_splash:
+  color: "#263238"
+  image: assets/icon.png
+  android: true
+  ios: true

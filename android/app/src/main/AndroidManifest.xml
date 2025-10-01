@@ -1,6 +1,6 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.tofuii.routine">
     <application
-        android:label="ewucp"
+        android:label="Tofu Routine"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
