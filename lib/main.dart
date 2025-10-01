@@ -12,6 +12,17 @@ void main() {
   runApp(MaterialApp(
     home: RoutinePage(),
     debugShowCheckedModeBanner: false,
+    theme: ThemeData(
+      dropdownMenuTheme: DropdownMenuThemeData(
+        menuStyle: MenuStyle(
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+          ),
+        ),
+      ),
+    ),
   ));
 }
 
@@ -170,107 +181,126 @@ class _RoutinePageState extends State<RoutinePage> {
     String? result = await showDialog<String>(
       context: context,
       builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setState) => AlertDialog(
-            title: Text('Add Time Slot'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                DropdownButton<String>(
-                  value: selectedTime,
-                  isExpanded: true,
-                  icon: Icon(Icons.arrow_drop_down),
-                  items: availableTimes.map((t) {
-                    return DropdownMenuItem(
-                      value: t,
-                      child: Text(t),
-                    );
-                  }).toList(),
-                  onChanged: (val) {
-                    setState(() {
-                      selectedTime = val!;
-                    });
-                  },
+        return DropdownMenuTheme(
+          data: DropdownMenuThemeData(
+            menuStyle: MenuStyle(
+              backgroundColor: WidgetStateProperty.all(Colors.blueGrey[50]),
+              shape: WidgetStateProperty.all(
+                RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                if (selectedTime == 'Custom')
-                  Padding(
-                    padding: EdgeInsets.only(top: 12),
-                    child: TextField(
+              ),
+            ),
+          ),
+          child: StatefulBuilder(
+            builder: (context, setState) => AlertDialog(
+              title: Text('Add Time Slot'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Time selection dropdown (replaced)
+                  DropdownMenu<String>(
+                    initialSelection: selectedTime,
+                    width: double.infinity,
+                    menuStyle: MenuStyle(
+                      backgroundColor: WidgetStatePropertyAll(Colors.blueGrey[50]),
+                      shape: WidgetStatePropertyAll(
+                        RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                    dropdownMenuEntries: availableTimes
+                        .map((t) => DropdownMenuEntry<String>(value: t, label: t))
+                        .toList(),
+                    onSelected: (val) => setState(() => selectedTime = val!),
+                  ),
+
+                  // Custom time text field
+                  if (selectedTime == 'Custom') ...[
+                    SizedBox(height: 12),
+                    TextField(
                       decoration: InputDecoration(
                         labelText: 'Custom Time',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
-                      onChanged: (val) {
-                        customTime = val;
-                      },
+                      onChanged: (val) => customTime = val,
                     ),
-                  ),
-                if (selectedTime == 'Custom' || selectedTime != 'Custom')
-                  Padding(
-                    padding: EdgeInsets.only(top: 12),
-                    child: DropdownButton<int>(
-                      value: insertIndex,
-                      isExpanded: true,
-                      icon: Icon(Icons.arrow_drop_down),
-                      items: [
-                        for (int i = 0; i <= times.length; i++)
-                          DropdownMenuItem(
-                            value: i,
-                            child: Text(
-                              i == times.length
-                                  ? 'At end'
-                                  : 'Before "${times[i]}"',
-                            ),
+                  ],
+
+                  // Insert position dropdown (unchanged)
+                  SizedBox(height: 12),
+                  DropdownButtonFormField<int>(
+                    value: insertIndex,
+                    isExpanded: true,
+                    icon: Icon(Icons.arrow_drop_down),
+                    decoration: InputDecoration(
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding:
+                      EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      filled: true,
+                      fillColor: Colors.blueGrey[50],
+                    ),
+                    items: [
+                      for (int i = 0; i <= times.length; i++)
+                        DropdownMenuItem(
+                          value: i,
+                          child: Text(
+                            i == times.length
+                                ? 'At end'
+                                : 'Before "${times[i]}"',
                           ),
-                      ],
-                      onChanged: (val) {
-                        setState(() {
-                          insertIndex = val!;
-                        });
-                      },
-                    ),
+                        ),
+                    ],
+                    onChanged: (val) => setState(() => insertIndex = val!),
                   ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  style: TextButton.styleFrom(foregroundColor: Colors.black),
+                  child: Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    String timeToAdd =
+                    selectedTime == 'Custom' ? customTime.trim() : selectedTime;
+                    if (timeToAdd.isEmpty || times.contains(timeToAdd)) {
+                      Navigator.pop(context);
+                      return;
+                    }
+                    Navigator.pop(context, '$timeToAdd|$insertIndex');
+                  },
+                  style: ElevatedButton.styleFrom(
+                    foregroundColor: Colors.black,
+                    backgroundColor: Colors.blue,
+                  ),
+                  child: Text('Add'),
+                ),
               ],
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                style: TextButton.styleFrom(foregroundColor: Colors.black),
-                child: Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  String timeToAdd = selectedTime == 'Custom'
-                      ? customTime.trim()
-                      : selectedTime;
-                  if (timeToAdd.isEmpty || times.contains(timeToAdd)) {
-                    Navigator.pop(context);
-                    return;
-                  }
-                  Navigator.pop(context, '$timeToAdd|$insertIndex');
-                },
-                style: ElevatedButton.styleFrom(
-                  foregroundColor: Colors.black,
-                  backgroundColor: Colors.blue,
-                ),
-                child: Text('Add'),
-              ),
-            ],
           ),
         );
       },
     );
-    if (!mounted) return;
-    if (result != null && result.isNotEmpty) {
-      final parts = result.split('|');
-      final timeToAdd = parts[0];
-      final idx = int.parse(parts[1]);
-      if (!times.contains(timeToAdd)) {
-        setState(() {
-          times.insert(idx, timeToAdd);
-          routine[timeToAdd] = List.generate(days.length, (_) => RoutineCellData());
-        });
-        await _saveRoutineData();
-      }
+
+    if (!mounted || result == null || result.isEmpty) return;
+
+    final parts = result.split('|');
+    final timeToAdd = parts[0];
+    final idx = int.parse(parts[1]);
+    if (!times.contains(timeToAdd)) {
+      setState(() {
+        times.insert(idx, timeToAdd);
+        routine[timeToAdd] = List.generate(days.length, (_) => RoutineCellData());
+      });
+      await _saveRoutineData();
     }
   }
 
@@ -282,47 +312,68 @@ class _RoutinePageState extends State<RoutinePage> {
     await showDialog(
       context: context,
       builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setState) => AlertDialog(
-            title: Text('Remove Time Slot'),
-            content: DropdownButton<String>(
-              value: selectedTime,
-              isExpanded: true,
-              icon: Icon(Icons.arrow_drop_down),
-              items: uniqueTimes.map((t) {
-                return DropdownMenuItem(
-                  value: t,
-                  child: Text(t),
-                );
-              }).toList(),
-              onChanged: (val) {
-                setState(() {
-                  selectedTime = val!;
-                });
-              },
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                style: TextButton.styleFrom(foregroundColor: Colors.black),
-                child: Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  setState(() {
-                    times.removeWhere((tt) => tt == selectedTime);
-                    routine.remove(selectedTime);
-                    removed = true;
-                  });
-                  Navigator.pop(context);
-                },
-                style: ElevatedButton.styleFrom(
-                  foregroundColor: Colors.black,
-                  backgroundColor: Colors.red,
+        return DropdownMenuTheme(
+          data: DropdownMenuThemeData(
+            menuStyle: MenuStyle(
+              backgroundColor: WidgetStateProperty.all(Colors.blueGrey[50]),
+              shape: WidgetStateProperty.all(
+                RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                child: Text('Remove'),
               ),
-            ],
+            ),
+          ),
+          child: StatefulBuilder(
+            builder: (context, setState) => AlertDialog(
+              title: Text('Remove Time Slot'),
+              content: DropdownButtonFormField<String>(
+                value: selectedTime,
+                isExpanded: true,
+                icon: Icon(Icons.arrow_drop_down),
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  filled: true,
+                  fillColor: Colors.blueGrey[50],
+                ),
+                items: uniqueTimes.map((t) {
+                  return DropdownMenuItem(
+                    value: t,
+                    child: Text(t),
+                  );
+                }).toList(),
+                onChanged: (val) {
+                  setState(() {
+                    selectedTime = val!;
+                  });
+                },
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  style: TextButton.styleFrom(foregroundColor: Colors.black),
+                  child: Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      times.removeWhere((tt) => tt == selectedTime);
+                      routine.remove(selectedTime);
+                      removed = true;
+                    });
+                    Navigator.pop(context);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    foregroundColor: Colors.black,
+                    backgroundColor: Colors.red,
+                  ),
+                  child: Text('Remove'),
+                ),
+              ],
+            ),
           ),
         );
       },
@@ -680,7 +731,87 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   void _showAddOptions() async {
-    _showAddTimeDialog();
+    final RenderBox fabRenderBox =
+      _saveFabKey.currentContext!.findRenderObject() as RenderBox;
+    final Offset fabOffset = fabRenderBox.localToGlobal(Offset.zero);
+    final Size fabSize = fabRenderBox.size;
+
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        fabOffset.dx + fabSize.width - 170,
+        fabOffset.dy - 130,
+        fabOffset.dx + fabSize.width,
+        fabOffset.dy,
+      ),
+      items: [
+        PopupMenuItem(
+          value: 'manual',
+          child: Material(
+            color: Colors.green[100], // switched from blue[100]
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              splashColor: Colors.green[200], // switched from blue[200]
+              highlightColor: Colors.green[300], // switched from blue[300]
+              onTap: () {
+                Navigator.pop(context, 'manual');
+              },
+              child: Container(
+                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.edit, color: Colors.green[700]), // switched from blue[700]
+                    SizedBox(width: 8),
+                    Text('Manual',
+                        style: TextStyle(color: Colors.green[900])), // switched from blue[900]
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'advising',
+          child: Material(
+            color: Colors.blue[100], // switched from green[100]
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              splashColor: Colors.blue[200], // switched from green[200]
+              highlightColor: Colors.blue[300], // switched from green[300]
+              onTap: () {
+                Navigator.pop(context, 'advising');
+              },
+              child: Container(
+                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.receipt_long, color: Colors.blue[700]), // switched from green[700]
+                    SizedBox(width: 8),
+                    Text('Advising Slip',
+                        style: TextStyle(color: Colors.blue[900])), // switched from green[900]
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+      elevation: 8,
+      color: Colors.blueGrey[900],
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+    );
+    if (!mounted) return;
+    if (selected == 'manual') {
+      _showAddTimeDialog();
+    } else if (selected == 'advising') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Advice not found')),
+      );
+    }
   }
 
   @override
@@ -694,10 +825,18 @@ class _RoutinePageState extends State<RoutinePage> {
         title: Text(
           'Tofu Routine',
           style: TextStyle(
+            fontFamily: 'JetBrains Mono',
             color: Colors.white,
             fontWeight: FontWeight.bold,
             fontSize: 22,
             letterSpacing: 1.2,
+            shadows: [
+              Shadow(
+                offset: Offset(1, 2),
+                blurRadius: 6,
+                color: Colors.black.withAlpha(102), // 0.4 * 255 ≈ 102
+              ),
+            ],
           ),
         ),
         backgroundColor: Colors.blue[900],
@@ -732,6 +871,7 @@ class _RoutinePageState extends State<RoutinePage> {
                                 child: Text(
                                   'Day',
                                   style: TextStyle(
+                                    fontFamily: 'JetBrains Mono',
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 17,
@@ -750,6 +890,7 @@ class _RoutinePageState extends State<RoutinePage> {
                                 child: Text(
                                   t,
                                   style: TextStyle(
+                                    fontFamily: 'JetBrains Mono',
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 16,
@@ -778,6 +919,7 @@ class _RoutinePageState extends State<RoutinePage> {
                                   child: Text(
                                     days[i],
                                     style: TextStyle(
+                                      fontFamily: 'JetBrains Mono',
                                       fontWeight: FontWeight.w600,
                                       fontSize: 16,
                                       color: Colors.white,
@@ -935,6 +1077,7 @@ class RoutineCell extends StatelessWidget {
           Text(
             data.course,
             style: TextStyle(
+              fontFamily: 'JetBrains Mono',
               color: Colors.white,
               fontWeight: FontWeight.bold,
               fontSize: 15,
@@ -947,6 +1090,7 @@ class RoutineCell extends StatelessWidget {
             Text(
               data.room,
               style: TextStyle(
+                fontFamily: 'JetBrains Mono',
                 color: Colors.white70,
                 fontSize: 13,
               ),
@@ -958,6 +1102,7 @@ class RoutineCell extends StatelessWidget {
             Text(
               '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
               style: TextStyle(
+                fontFamily: 'JetBrains Mono',
                 color: Colors.lightBlueAccent,
                 fontSize: 13,
               ),
@@ -971,6 +1116,7 @@ class RoutineCell extends StatelessWidget {
       return Text(
         '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
         style: TextStyle(
+          fontFamily: 'JetBrains Mono',
           color: Colors.lightBlueAccent,
           fontSize: 15,
         ),
@@ -980,6 +1126,7 @@ class RoutineCell extends StatelessWidget {
       return Text(
         '-',
         style: TextStyle(
+          fontFamily: 'JetBrains Mono',
           color: Colors.white70,
           fontSize: 15,
         ),
