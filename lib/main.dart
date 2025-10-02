@@ -171,6 +171,7 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   void _showAddTimeDialog() async {
+    // Popup: Add Time Slot dialog
     List<String> availableTimes = [
       ...allTimes.where((t) => t == 'Custom' || !times.contains(t))
     ];
@@ -181,15 +182,17 @@ class _RoutinePageState extends State<RoutinePage> {
     String? result = await showDialog<String>(
       context: context,
       builder: (context) {
+        // Popup: DropdownMenuTheme for Add Time Slot dialog
         return DropdownMenuTheme(
           data: DropdownMenuThemeData(
             menuStyle: MenuStyle(
-              backgroundColor: WidgetStateProperty.all(Colors.blueGrey[50]),
-              shape: WidgetStateProperty.all(
+              backgroundColor: WidgetStatePropertyAll(Colors.blueGrey[50]),
+              shape: WidgetStatePropertyAll(
                 RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
               ),
+              elevation: WidgetStatePropertyAll(2),
             ),
           ),
           child: StatefulBuilder(
@@ -198,25 +201,30 @@ class _RoutinePageState extends State<RoutinePage> {
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Time selection dropdown (replaced)
-                  DropdownMenu<String>(
-                    initialSelection: selectedTime,
-                    width: double.infinity,
-                    menuStyle: MenuStyle(
-                      backgroundColor: WidgetStatePropertyAll(Colors.blueGrey[50]),
-                      shape: WidgetStatePropertyAll(
-                        RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                  // Dropdown: Time selection dropdown styled like "At end"
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedTime,
+                    isExpanded: true,
+                    icon: Icon(Icons.arrow_drop_down),
+                    decoration: InputDecoration(
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
                       ),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      filled: true,
+                      fillColor: Colors.blueGrey[50],
                     ),
-                    dropdownMenuEntries: availableTimes
-                        .map((t) => DropdownMenuEntry<String>(value: t, label: t))
+                    items: availableTimes
+                        .map((t) => DropdownMenuItem<String>(
+                              value: t,
+                              child: Text(t),
+                            ))
                         .toList(),
-                    onSelected: (val) => setState(() => selectedTime = val!),
+                    onChanged: (val) => setState(() => selectedTime = val!),
                   ),
 
-                  // Custom time text field
+                  // TextField: Custom time input (shown if "Custom" selected)
                   if (selectedTime == 'Custom') ...[
                     SizedBox(height: 12),
                     TextField(
@@ -230,10 +238,10 @@ class _RoutinePageState extends State<RoutinePage> {
                     ),
                   ],
 
-                  // Insert position dropdown (unchanged)
+                  // Dropdown: Insert position dropdown ("At end" or before a time)
                   SizedBox(height: 12),
                   DropdownButtonFormField<int>(
-                    value: insertIndex,
+                    initialValue: insertIndex,
                     isExpanded: true,
                     icon: Icon(Icons.arrow_drop_down),
                     decoration: InputDecoration(
@@ -241,8 +249,7 @@ class _RoutinePageState extends State<RoutinePage> {
                         borderRadius: BorderRadius.circular(12),
                         borderSide: BorderSide.none,
                       ),
-                      contentPadding:
-                      EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       filled: true,
                       fillColor: Colors.blueGrey[50],
                     ),
@@ -251,9 +258,7 @@ class _RoutinePageState extends State<RoutinePage> {
                         DropdownMenuItem(
                           value: i,
                           child: Text(
-                            i == times.length
-                                ? 'At end'
-                                : 'Before "${times[i]}"',
+                            i == times.length ? 'At end' : 'Before "${times[i]}"',
                           ),
                         ),
                     ],
@@ -262,15 +267,17 @@ class _RoutinePageState extends State<RoutinePage> {
                 ],
               ),
               actions: [
+                // Button: Cancel add time
                 TextButton(
                   onPressed: () => Navigator.pop(context),
                   style: TextButton.styleFrom(foregroundColor: Colors.black),
                   child: Text('Cancel'),
                 ),
+                // Button: Confirm add time
                 ElevatedButton(
                   onPressed: () {
                     String timeToAdd =
-                    selectedTime == 'Custom' ? customTime.trim() : selectedTime;
+                        selectedTime == 'Custom' ? customTime.trim() : selectedTime;
                     if (timeToAdd.isEmpty || times.contains(timeToAdd)) {
                       Navigator.pop(context);
                       return;
@@ -305,6 +312,7 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   void _showRemoveTimeDialog() async {
+    // Popup: Remove Time Slot dialog
     if (times.isEmpty) return;
     List<String> uniqueTimes = times.toSet().toList();
     String selectedTime = uniqueTimes[0];
@@ -312,6 +320,7 @@ class _RoutinePageState extends State<RoutinePage> {
     await showDialog(
       context: context,
       builder: (context) {
+        // Popup: DropdownMenuTheme for Remove Time Slot dialog
         return DropdownMenuTheme(
           data: DropdownMenuThemeData(
             menuStyle: MenuStyle(
@@ -326,8 +335,9 @@ class _RoutinePageState extends State<RoutinePage> {
           child: StatefulBuilder(
             builder: (context, setState) => AlertDialog(
               title: Text('Remove Time Slot'),
+              // Dropdown: Select time to remove
               content: DropdownButtonFormField<String>(
-                value: selectedTime,
+                initialValue: selectedTime,
                 isExpanded: true,
                 icon: Icon(Icons.arrow_drop_down),
                 decoration: InputDecoration(
@@ -352,11 +362,13 @@ class _RoutinePageState extends State<RoutinePage> {
                 },
               ),
               actions: [
+                // Button: Cancel remove time
                 TextButton(
                   onPressed: () => Navigator.pop(context),
                   style: TextButton.styleFrom(foregroundColor: Colors.black),
                   child: Text('Cancel'),
                 ),
+                // Button: Confirm remove time
                 ElevatedButton(
                   onPressed: () {
                     setState(() {
@@ -386,11 +398,13 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   void _showCellDialog(int dayIdx, String time) async {
+    // Popup: Cell info dialog (shows class/friends info for a cell)
     final cell = routine[time]![dayIdx];
     if (cell.isEmpty) {
       await showDialog(
         context: context,
         builder: (context) {
+          // Popup: No class info dialog
           return AlertDialog(
             title: Text('No class'),
             content: Text('No class info for this slot.'),
@@ -398,6 +412,7 @@ class _RoutinePageState extends State<RoutinePage> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
+                  // Button: Add class from empty cell dialog
                   TextButton(
                     onPressed: () async {
                       Navigator.pop(context);
@@ -407,6 +422,7 @@ class _RoutinePageState extends State<RoutinePage> {
                     child: Text('Add Class'),
                   ),
                   SizedBox(width: 8),
+                  // Button: Add friend from empty cell dialog
                   TextButton(
                     onPressed: () async {
                       Navigator.pop(context);
@@ -425,6 +441,7 @@ class _RoutinePageState extends State<RoutinePage> {
       await showDialog(
         context: context,
         builder: (context) {
+          // Popup: Class info dialog (shows class/friends details)
           return StatefulBuilder(
             builder: (context, setStateDialog) {
               List<Widget> infoWidgets = [];
@@ -433,6 +450,7 @@ class _RoutinePageState extends State<RoutinePage> {
                   ListTile(
                     title: Text('Class'),
                     subtitle: Text('${cell.course}\n${cell.room}'),
+                    // Button: Delete class from cell
                     trailing: IconButton(
                       icon: Icon(Icons.delete, color: Colors.red),
                       onPressed: () {
@@ -458,6 +476,7 @@ class _RoutinePageState extends State<RoutinePage> {
                     ListTile(
                       title: Text(friend.name),
                       subtitle: Text('${friend.course}\n${friend.room}'),
+                      // Button: Delete friend from cell
                       trailing: IconButton(
                         icon: Icon(Icons.delete, color: Colors.red),
                         onPressed: () {
@@ -484,6 +503,7 @@ class _RoutinePageState extends State<RoutinePage> {
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
                       if (cell.course.isEmpty)
+                        // Button: Add class from info dialog
                         ElevatedButton(
                           onPressed: () async {
                             Navigator.pop(context);
@@ -493,6 +513,7 @@ class _RoutinePageState extends State<RoutinePage> {
                           child: Text('Add Class'),
                         ),
                       SizedBox(width: 8),
+                      // Button: Add friend from info dialog
                       ElevatedButton(
                         onPressed: () async {
                           Navigator.pop(context);
@@ -513,6 +534,7 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   Future<void> _showAddClassDialog(int dayIdx, String time) async {
+    // Popup: Add Class dialog
     String course = '';
     String room = '';
     await showDialog(
@@ -523,11 +545,13 @@ class _RoutinePageState extends State<RoutinePage> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // TextField: Course name input
               TextField(
                 decoration: InputDecoration(labelText: 'Course Name'),
                 onChanged: (val) => course = val,
               ),
               SizedBox(height: 12),
+              // TextField: Room number input
               TextField(
                 decoration: InputDecoration(labelText: 'Room Number'),
                 onChanged: (val) => room = val,
@@ -535,11 +559,13 @@ class _RoutinePageState extends State<RoutinePage> {
             ],
           ),
           actions: [
+            // Button: Cancel add class
             TextButton(
               onPressed: () => Navigator.pop(context),
               style: TextButton.styleFrom(foregroundColor: Colors.black),
               child: Text('Cancel'),
             ),
+            // Button: Save class
             ElevatedButton(
               onPressed: () {
                 if (course.trim().isNotEmpty || room.trim().isNotEmpty) {
@@ -562,6 +588,7 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   Future<void> _showAddFriendDialog(int dayIdx, String time) async {
+    // Popup: Add Friend dialog
     String friendName = '';
     String friendCourse = '';
     String friendRoom = '';
@@ -573,16 +600,19 @@ class _RoutinePageState extends State<RoutinePage> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // TextField: Friend name input
               TextField(
                 decoration: InputDecoration(labelText: 'Friend Name'),
                 onChanged: (val) => friendName = val,
               ),
               SizedBox(height: 12),
+              // TextField: Friend course input
               TextField(
                 decoration: InputDecoration(labelText: 'Course Name'),
                 onChanged: (val) => friendCourse = val,
               ),
               SizedBox(height: 12),
+              // TextField: Friend room input
               TextField(
                 decoration: InputDecoration(labelText: 'Room Number'),
                 onChanged: (val) => friendRoom = val,
@@ -590,11 +620,13 @@ class _RoutinePageState extends State<RoutinePage> {
             ],
           ),
           actions: [
+            // Button: Cancel add friend
             TextButton(
               onPressed: () => Navigator.pop(context),
               style: TextButton.styleFrom(foregroundColor: Colors.black),
               child: Text('Cancel'),
             ),
+            // Button: Save friend
             ElevatedButton(
               onPressed: () {
                 if (friendName.trim().isNotEmpty ||
@@ -621,6 +653,7 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   Future<void> _saveRoutineToDownloads() async {
+    // Button: Save routine as PNG to Downloads
     try {
       RenderRepaintBoundary boundary =
       _routineKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
@@ -649,6 +682,7 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   void _showSaveOptions() async {
+    // Popup: Save options menu (Save as PNG, Save as PDF)
     final RenderBox fabRenderBox =
     _saveFabKey.currentContext!.findRenderObject() as RenderBox;
     final Offset fabOffset = fabRenderBox.localToGlobal(Offset.zero);
@@ -663,6 +697,7 @@ class _RoutinePageState extends State<RoutinePage> {
         fabOffset.dy,
       ),
       items: [
+        // Button: Save as PNG
         PopupMenuItem(
           value: 'save1',
           child: Material(
@@ -689,6 +724,7 @@ class _RoutinePageState extends State<RoutinePage> {
             ),
           ),
         ),
+        // Button: Save as PDF
         PopupMenuItem(
           value: 'save2',
           child: Material(
@@ -731,6 +767,7 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   void _showAddOptions() async {
+    // Popup: Add options menu (Manual, Advising Slip)
     final RenderBox fabRenderBox =
       _saveFabKey.currentContext!.findRenderObject() as RenderBox;
     final Offset fabOffset = fabRenderBox.localToGlobal(Offset.zero);
@@ -745,6 +782,7 @@ class _RoutinePageState extends State<RoutinePage> {
         fabOffset.dy,
       ),
       items: [
+        // Button: Manual add time
         PopupMenuItem(
           value: 'manual',
           child: Material(
@@ -771,6 +809,7 @@ class _RoutinePageState extends State<RoutinePage> {
             ),
           ),
         ),
+        // Button: Advising slip
         PopupMenuItem(
           value: 'advising',
           child: Material(
@@ -967,6 +1006,7 @@ class _RoutinePageState extends State<RoutinePage> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Button: Remove time slot (red minus FAB)
               FloatingActionButton(
                 heroTag: 'remove',
                 onPressed: _showRemoveTimeDialog,
@@ -974,6 +1014,7 @@ class _RoutinePageState extends State<RoutinePage> {
                 child: Icon(Icons.remove, color: Colors.white),
               ),
               SizedBox(width: 16),
+              // Button: Add time slot (blue plus FAB)
               FloatingActionButton(
                 heroTag: 'add',
                 onPressed: _showAddOptions,
@@ -981,6 +1022,7 @@ class _RoutinePageState extends State<RoutinePage> {
                 child: Icon(Icons.add, color: Colors.white),
               ),
               SizedBox(width: 16),
+              // Button: Save options (green down arrow FAB)
               FloatingActionButton(
                 key: _saveFabKey,
                 heroTag: 'save',
