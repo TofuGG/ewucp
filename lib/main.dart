@@ -2,11 +2,30 @@ import 'dart:typed_data';
 import 'dart:io';
 import 'dart:ui';
 import 'dart:convert';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:excel/excel.dart' as ex;
 import 'package:printing/printing.dart';
+import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
+import 'package:flutter/foundation.dart';
+
+class MyRoutineData {
+  static List<String> cValues = [];
+  static List<String> baValues = [];
+}
+
+List<Map<String, String>> advisingData = []; // memory store
+
+// ======= Global routine data =======
+Map<String, List<RoutineCellData>> routine = {}; // time → 7 days
+List<String> times = [];
+List<String> days = ['Monday','Tuesday','Wednesday','Thursday','Sunday'];
+// ===================================
+
+
 
 void main() {
   runApp(MaterialApp(
@@ -34,18 +53,9 @@ class RoutinePage extends StatefulWidget {
 }
 
 class _RoutinePageState extends State<RoutinePage> {
+  List<String> cValues = [];
+  List<String> baValues = [];
   final GlobalKey _saveFabKey = GlobalKey();
-  final List<String> days = [
-    'Sunday',
-    'Monday',
-    'Tuesday',
-    'Wednesday',
-    'Thursday',
-  ];
-
-  List<String> times = [];
-  Map<String, List<RoutineCellData>> routine = {};
-
   final List<String> allTimes = [
     '8:30am-10:00am',
     '10:10am-11:40am',
@@ -61,7 +71,6 @@ class _RoutinePageState extends State<RoutinePage> {
   final double dayColWidth = 120;
   final double timeColWidth = 150;
   final double cellMargin = 4;
-
   final GlobalKey _routineKey = GlobalKey();
 
   @override
@@ -69,6 +78,129 @@ class _RoutinePageState extends State<RoutinePage> {
     super.initState();
     _loadRoutineData();
   }
+
+  Future<List<Map<String, String>>> parseExcelBytes(Uint8List bytes) async {
+    try {
+      final decoder = SpreadsheetDecoder.decodeBytes(bytes, update: true);
+      final sheetName = decoder.tables.keys.first;
+      final sheet = decoder.tables[sheetName];
+      if (sheet == null) return [];
+
+      List<Map<String, String>> result = [];
+
+      for (int i = 16; i <= 20; i++) {
+        final row = sheet.rows.length > i ? sheet.rows[i] : [];
+        final cCell = row.length > 2 ? row[2]?.toString() ?? '' : '';
+        final baCell = row.length > 53 ? row[53]?.toString() ?? '' : '';
+
+        cValues.add(cCell);
+        baValues.add(baCell);
+
+        print('C${i + 1}: ${cValues.last}, BA${i + 1}: ${baValues.last}');
+        await Future.delayed(Duration(seconds: 2));
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint("parseExcelBytes error: $e");
+      return [];
+    }
+  }
+
+  Future<void> pickFile(BuildContext context) async {
+    try {
+      // Pick any file
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        final file = result.files.first;
+        final filename = file.name;
+
+        // ✅ Check extension
+        if (filename.toLowerCase().endsWith('.xlsx')) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('You selected: $filename')),
+          );
+
+          // Here you can pass file.path to your XLSX parser
+          print("File path: ${file.path}");
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Please select a .xlsx file')),
+          );
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No file selected')),
+        );
+      }
+    } catch (e) {
+      debugPrint("FilePicker error: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
+  }
+  
+
+  Future<void> applyAdvisingSlip(ex.Excel excel) async {
+    routine.clear();
+    times.clear();
+
+    final sheet = excel.tables.keys.contains('Sheet1') ? excel.tables['Sheet1'] : excel.tables.values.first;
+    if (sheet == null) return;
+
+    for (int row = 17, col = 2; row <= 21; row++, col += 51) {
+      final subjectCell = sheet.cell(ex.CellIndex.indexByColumnRow(columnIndex: col, rowIndex: row));
+      final baCell = sheet.cell(ex.CellIndex.indexByColumnRow(columnIndex: col + 51, rowIndex: row));
+
+      final subject = subjectCell.value?.toString().trim() ?? '';
+      final ba = baCell.value?.toString().trim() ?? '';
+
+      if (subject.isEmpty || ba.isEmpty) continue;
+
+      final parts = ba.split(' ');
+      if (parts.length < 2) continue;
+
+      final weekdayPart = parts[0];
+      final timeRange = parts.sublist(1).join(' ');
+
+      if (!times.contains(timeRange)) {
+        times.add(timeRange);
+        routine[timeRange] = List.generate(days.length, (_) => RoutineCellData());
+      }
+
+      for (int i = 0; i < weekdayPart.length; i++) {
+        String letter = weekdayPart[i];
+        if (letter == 'T' && i + 1 < weekdayPart.length && weekdayPart[i + 1] == 'h') {
+          letter = 'Th';
+          i++;
+        }
+        final dayIndex = days.indexOf({
+          'M': 'Monday',
+          'T': 'Tuesday',
+          'W': 'Wednesday',
+          'Th': 'Thursday',
+          'F': 'Friday',
+          'S': 'Saturday',
+          'Su': 'Sunday',
+        }[letter] ?? '');
+        if (dayIndex >= 0) {
+          routine[timeRange]![dayIndex] =
+              routine[timeRange]![dayIndex].copyWith(course: subject);
+        }
+      }
+    }
+
+    setState(() {});
+    await _saveRoutineData();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Advising slip applied in routine!')),
+    );
+  }
+
 
   Future<void> _saveRoutineToPdf() async {
     final pdfDoc = pw.Document();
@@ -186,7 +318,7 @@ class _RoutinePageState extends State<RoutinePage> {
         return DropdownMenuTheme(
           data: DropdownMenuThemeData(
             menuStyle: MenuStyle(
-              backgroundColor: WidgetStatePropertyAll(Colors.blueGrey[50]),
+              backgroundColor: WidgetStatePropertyAll(Colors.blueGrey[900]),
               shape: WidgetStatePropertyAll(
                 RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -659,6 +791,12 @@ class _RoutinePageState extends State<RoutinePage> {
       _routineKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
       var image = await boundary.toImage(pixelRatio: 3.0);
       ByteData? byteData = await image.toByteData(format: ImageByteFormat.png);
+      if (byteData == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to capture routine image.')),
+        );
+        return;
+      }
       Uint8List pngBytes = byteData!.buffer.asUint8List();
 
       final downloadsDir = Directory('/storage/emulated/0/Download');
@@ -847,9 +985,7 @@ class _RoutinePageState extends State<RoutinePage> {
     if (selected == 'manual') {
       _showAddTimeDialog();
     } else if (selected == 'advising') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Advice not found')),
-      );
+      await pickFile(context);
     }
   }
 
