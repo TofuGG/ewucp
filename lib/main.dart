@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'dart:io';
 import 'dart:ui';
 import 'dart:convert';
@@ -7,37 +6,44 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:excel/excel.dart' as ex;
 import 'package:printing/printing.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
 import 'package:flutter/foundation.dart';
 
-class MyRoutineData {
-  static List<String> cValues = [];
-  static List<String> baValues = [];
-}
-
-List<Map<String, String>> advisingData = []; // memory store
-
 // ======= Global routine data =======
-Map<String, List<RoutineCellData>> routine = {}; // time → 7 days
+Map<String, List<RoutineCellData>> routine = {};
 List<String> times = [];
-List<String> days = ['Monday','Tuesday','Wednesday','Thursday','Sunday'];
+const List<String> kAllDays = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
+List<String> days = [...kAllDays];
+
+// Shared day abbreviation map used for EWU advising slip parsing
+const Map<String, String> kDayMap = {
+  'S': 'Sunday',
+  'M': 'Monday',
+  'T': 'Tuesday',
+  'W': 'Wednesday',
+  'R': 'Thursday',
+};
 // ===================================
-
-
 
 void main() {
   runApp(MaterialApp(
-    home: RoutinePage(),
+    home: const RoutinePage(),
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       dropdownMenuTheme: DropdownMenuThemeData(
         menuStyle: MenuStyle(
           shape: WidgetStateProperty.all(
-            RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
-            ),
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           ),
         ),
       ),
@@ -53,10 +59,12 @@ class RoutinePage extends StatefulWidget {
 }
 
 class _RoutinePageState extends State<RoutinePage> {
-  List<String> cValues = [];
-  List<String> baValues = [];
   final GlobalKey _saveFabKey = GlobalKey();
-  final List<String> allTimes = [
+  final GlobalKey _routineKey = GlobalKey();
+  final GlobalKey _addFabKey = GlobalKey();
+  final GlobalKey _removeFabKey = GlobalKey();
+
+  final List<String> allTimes = const [
     '8:30am-10:00am',
     '10:10am-11:40am',
     '11:50am-1:20pm',
@@ -68,10 +76,9 @@ class _RoutinePageState extends State<RoutinePage> {
     'Custom',
   ];
 
-  final double dayColWidth = 120;
-  final double timeColWidth = 150;
-  final double cellMargin = 4;
-  final GlobalKey _routineKey = GlobalKey();
+  static const double dayColWidth = 120;
+  static const double timeColWidth = 150;
+  static const double cellMargin = 4;
 
   @override
   void initState() {
@@ -79,361 +86,669 @@ class _RoutinePageState extends State<RoutinePage> {
     _loadRoutineData();
   }
 
-  Future<List<Map<String, String>>> parseExcelBytes(Uint8List bytes) async {
+  // ---------------------------------------------------------------------------
+  // Advising slip parser
+  // ---------------------------------------------------------------------------
+
+  Future<void> _applyAdvisingSlipFromFile(Uint8List bytes) async {
     try {
-      final decoder = SpreadsheetDecoder.decodeBytes(bytes, update: true);
-      final sheetName = decoder.tables.keys.first;
-      final sheet = decoder.tables[sheetName];
-      if (sheet == null) return [];
+      const int colCourse = 2;
+      const int colSection = 16;
+      const int colTime = 52;
+      const int colRoom = 64;
 
-      List<Map<String, String>> result = [];
+      final decoder = SpreadsheetDecoder.decodeBytes(bytes.toList());
+      final tableName = decoder.tables.keys.first;
+      final table = decoder.tables[tableName]!;
+      final rows = table.rows;
 
-      for (int i = 16; i <= 20; i++) {
-        final row = sheet.rows.length > i ? sheet.rows[i] : [];
-        final cCell = row.length > 2 ? row[2]?.toString() ?? '' : '';
-        final baCell = row.length > 53 ? row[53]?.toString() ?? '' : '';
+      routine.clear();
+      times.clear();
+      days = [...kAllDays];
 
-        cValues.add(cCell);
-        baValues.add(baCell);
-
-        print('C${i + 1}: ${cValues.last}, BA${i + 1}: ${baValues.last}');
-        await Future.delayed(Duration(seconds: 2));
+      // Find header row "Course(s)" in column C
+      int dataStart = -1;
+      for (int i = 0; i < rows.length; i++) {
+        final row = rows[i];
+        final val = row.length > colCourse
+            ? (row[colCourse]?.toString().trim() ?? '')
+            : '';
+        if (val == 'Course(s)') {
+          dataStart = i + 1;
+          break;
+        }
+      }
+      if (dataStart == -1) {
+        _showSnackBar('Could not find course data in the file.');
+        return;
       }
 
-      return result;
+      bool applied = false;
+      String lastLabel = '';
+      final pending = <_PendingSlot>[];
+
+      for (int i = dataStart; i < rows.length; i++) {
+        final row = rows[i];
+        final courseRaw = row.length > colCourse
+            ? (row[colCourse]?.toString().trim() ?? '')
+            : '';
+        final timeRaw = row.length > colTime
+            ? (row[colTime]?.toString().trim() ?? '')
+            : '';
+        final roomRaw = row.length > colRoom
+            ? (row[colRoom]?.toString().trim() ?? '')
+            : '';
+        final secRaw = row.length > colSection
+            ? (row[colSection]?.toString().trim() ?? '')
+            : '';
+
+        final lower = courseRaw.toLowerCase();
+        if (lower.contains('tuition fee') ||
+            lower.contains('grand total') ||
+            lower.contains('laboratory fee') ||
+            lower.contains('student activity fee')) {
+          break;
+        }
+
+        if (courseRaw.isNotEmpty) {
+          lastLabel = secRaw.isNotEmpty ? '$courseRaw ($secRaw)' : courseRaw;
+
+          // Process any rows that had time but no course yet (forward refs)
+          for (final p in pending) {
+            _applyTimeSlot(p.time, p.room, lastLabel);
+            applied = true;
+          }
+          pending.clear();
+
+          if (timeRaw.isNotEmpty) {
+            _applyTimeSlot(timeRaw, roomRaw, lastLabel);
+            applied = true;
+          }
+        } else if (timeRaw.isNotEmpty) {
+          if (lastLabel.isNotEmpty) {
+            _applyTimeSlot(timeRaw, roomRaw, lastLabel);
+            applied = true;
+          } else {
+            pending.add(_PendingSlot(timeRaw, roomRaw));
+          }
+        }
+      }
+
+      // Flush any remaining pending rows
+      if (lastLabel.isNotEmpty) {
+        for (final p in pending) {
+          _applyTimeSlot(p.time, p.room, lastLabel);
+          applied = true;
+        }
+      }
+
+      // Sort times chronologically by start time, then by end time
+      int toMinutes(String t) {
+        final m = RegExp(r'(\d+):(\d+)(AM|PM)').firstMatch(t);
+        if (m == null) return 0;
+        int h = int.parse(m[1]!), min = int.parse(m[2]!);
+        if (m[3]! == 'PM' && h != 12) h += 12;
+        if (m[3]! == 'AM' && h == 12) h = 0;
+        return h * 60 + min;
+      }
+      times.sort((a, b) {
+        final aStart = toMinutes(a.split('-')[0]);
+        final bStart = toMinutes(b.split('-')[0]);
+        final cmp = aStart.compareTo(bStart);
+        return cmp != 0 ? cmp : toMinutes(a.split('-')[1]).compareTo(toMinutes(b.split('-')[1]));
+      });
+
+      // Remove empty days (no course data in any time slot)
+      final keepIndices = <int>[];
+      for (int i = 0; i < days.length; i++) {
+        bool hasContent = false;
+        for (final time in times) {
+          final cells = routine[time];
+          if (cells != null && i < cells.length && !cells[i].isEmpty) {
+            hasContent = true;
+            break;
+          }
+        }
+        if (hasContent) keepIndices.add(i);
+      }
+      if (keepIndices.length < days.length) {
+        days = keepIndices.map((i) => days[i]).toList();
+        for (final time in times) {
+          final cells = routine[time];
+          if (cells != null) {
+            routine[time] = keepIndices.map((i) => cells[i]).toList();
+          }
+        }
+      }
+
+      setState(() {});
+      await _saveRoutineData();
+      _showSnackBar(
+        applied
+            ? 'Advising slip applied successfully!'
+            : 'No valid routine data found in the file.',
+      );
     } catch (e) {
-      debugPrint("parseExcelBytes error: $e");
-      return [];
+      debugPrint('_applyAdvisingSlipFromFile error: $e');
+      _showSnackBar('Failed to apply advising slip: $e');
     }
   }
 
-  Future<void> pickFile(BuildContext context) async {
+  void _applyTimeSlot(String timeRaw, String roomRaw, String courseLabel) {
+    final spaceIdx = timeRaw.indexOf(' ');
+    if (spaceIdx < 0) return;
+
+    final weekdayPart = timeRaw.substring(0, spaceIdx);
+    final timeRange = timeRaw.substring(spaceIdx + 1).replaceAll(' ', '');
+
+    // Clean room: strip trailing parenthetical notes like "534 (C. Lab-4)" -> "534"
+    String room = roomRaw;
+    final parenIdx = room.indexOf(' (');
+    if (parenIdx > 0) room = room.substring(0, parenIdx);
+
+    if (!times.contains(timeRange)) {
+      times.add(timeRange);
+      routine[timeRange] = List.generate(days.length, (_) => RoutineCellData());
+    }
+
+    for (int i = 0; i < weekdayPart.length; i++) {
+      final dayName = kDayMap[weekdayPart[i]];
+      if (dayName == null) continue;
+      final dayIndex = days.indexOf(dayName);
+      if (dayIndex < 0) continue;
+
+      routine[timeRange]![dayIndex] = routine[timeRange]![dayIndex].copyWith(
+        course: courseLabel,
+        room: room,
+      );
+    }
+  }
+
+  String _extractFriendName(List<List> rows) {
+    const int nameRow = 13;
+    const int nameCol = 9;
+    if (nameRow >= rows.length) return '';
+    final row = rows[nameRow];
+    if (nameCol >= row.length) return '';
+    final raw = row[nameCol]?.toString().trim() ?? '';
+    final parts = raw.split(RegExp(r'\s+'));
+    for (final part in parts) {
+      final cleaned = part.replaceAll(RegExp(r'[.,;:!?]+$'), '');
+      if (cleaned.length <= 3) continue;
+      return cleaned;
+    }
+    return '';
+  }
+
+  void _ensureDayExists(String dayName) {
+    if (days.contains(dayName)) return;
+    final targetIndex = kAllDays.indexOf(dayName);
+    if (targetIndex < 0) return;
+    int insertAt = days.length;
+    for (int i = 0; i < days.length; i++) {
+      if (kAllDays.indexOf(days[i]) > targetIndex) {
+        insertAt = i;
+        break;
+      }
+    }
+    days.insert(insertAt, dayName);
+    for (final time in times) {
+      routine[time]!.insert(insertAt, RoutineCellData());
+    }
+  }
+
+  Future<void> _applyFriendSlipFromFile(Uint8List bytes) async {
     try {
-      // Pick any file
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.any,
+      const int colCourse = 2;
+      const int colSection = 16;
+      const int colTime = 52;
+      const int colRoom = 64;
+
+      final decoder = SpreadsheetDecoder.decodeBytes(bytes.toList());
+      final tableName = decoder.tables.keys.first;
+      final table = decoder.tables[tableName]!;
+      final rows = table.rows;
+
+      final friendName = _extractFriendName(rows);
+      if (friendName.isEmpty) {
+        _showSnackBar('Could not find student name in the file.');
+        return;
+      }
+
+      // Find header row "Course(s)" in column C
+      int dataStart = -1;
+      for (int i = 0; i < rows.length; i++) {
+        final row = rows[i];
+        final val = row.length > colCourse
+            ? (row[colCourse]?.toString().trim() ?? '')
+            : '';
+        if (val == 'Course(s)') {
+          dataStart = i + 1;
+          break;
+        }
+      }
+      if (dataStart == -1) {
+        _showSnackBar('Could not find course data in the file.');
+        return;
+      }
+
+      bool added = false;
+      String lastLabel = '';
+      final pending = <_PendingSlot>[];
+
+      for (int i = dataStart; i < rows.length; i++) {
+        final row = rows[i];
+        final courseRaw = row.length > colCourse
+            ? (row[colCourse]?.toString().trim() ?? '')
+            : '';
+        final timeRaw = row.length > colTime
+            ? (row[colTime]?.toString().trim() ?? '')
+            : '';
+        final roomRaw = row.length > colRoom
+            ? (row[colRoom]?.toString().trim() ?? '')
+            : '';
+        final secRaw = row.length > colSection
+            ? (row[colSection]?.toString().trim() ?? '')
+            : '';
+
+        final lower = courseRaw.toLowerCase();
+        if (lower.contains('tuition fee') ||
+            lower.contains('grand total') ||
+            lower.contains('laboratory fee') ||
+            lower.contains('student activity fee')) {
+          break;
+        }
+
+        if (courseRaw.isNotEmpty) {
+          lastLabel = secRaw.isNotEmpty ? '$courseRaw ($secRaw)' : courseRaw;
+
+          for (final p in pending) {
+            _applyFriendTimeSlot(p.time, p.room, lastLabel, friendName);
+            added = true;
+          }
+          pending.clear();
+
+          if (timeRaw.isNotEmpty) {
+            _applyFriendTimeSlot(timeRaw, roomRaw, lastLabel, friendName);
+            added = true;
+          }
+        } else if (timeRaw.isNotEmpty) {
+          if (lastLabel.isNotEmpty) {
+            _applyFriendTimeSlot(timeRaw, roomRaw, lastLabel, friendName);
+            added = true;
+          } else {
+            pending.add(_PendingSlot(timeRaw, roomRaw));
+          }
+        }
+      }
+
+      if (lastLabel.isNotEmpty) {
+        for (final p in pending) {
+          _applyFriendTimeSlot(p.time, p.room, lastLabel, friendName);
+          added = true;
+        }
+      }
+
+      if (added) {
+        // Sort times chronologically
+        int toMinutes(String t) {
+          final m = RegExp(r'(\d+):(\d+)(AM|PM)').firstMatch(t);
+          if (m == null) return 0;
+          int h = int.parse(m[1]!), min = int.parse(m[2]!);
+          if (m[3]! == 'PM' && h != 12) h += 12;
+          if (m[3]! == 'AM' && h == 12) h = 0;
+          return h * 60 + min;
+        }
+        times.sort((a, b) {
+          final aStart = toMinutes(a.split('-')[0]);
+          final bStart = toMinutes(b.split('-')[0]);
+          final cmp = aStart.compareTo(bStart);
+          return cmp != 0 ? cmp : toMinutes(a.split('-')[1]).compareTo(toMinutes(b.split('-')[1]));
+        });
+      }
+
+      setState(() {});
+      await _saveRoutineData();
+      _showSnackBar('Added $friendName\'s schedule successfully!');
+    } catch (e) {
+      debugPrint('_applyFriendSlipFromFile error: $e');
+      _showSnackBar('Failed to apply friend slip: $e');
+    }
+  }
+
+  void _applyFriendTimeSlot(String timeRaw, String roomRaw, String courseLabel, String friendName) {
+    final spaceIdx = timeRaw.indexOf(' ');
+    if (spaceIdx < 0) return;
+
+    final weekdayPart = timeRaw.substring(0, spaceIdx);
+    final timeRange = timeRaw.substring(spaceIdx + 1).replaceAll(' ', '');
+
+    String room = roomRaw;
+    final parenIdx = room.indexOf(' (');
+    if (parenIdx > 0) room = room.substring(0, parenIdx);
+
+    if (!times.contains(timeRange)) {
+      times.add(timeRange);
+      routine[timeRange] = List.generate(days.length, (_) => RoutineCellData());
+    }
+
+    for (int i = 0; i < weekdayPart.length; i++) {
+      final dayName = kDayMap[weekdayPart[i]];
+      if (dayName == null) continue;
+
+      _ensureDayExists(dayName);
+
+      final dayIndex = days.indexOf(dayName);
+      if (dayIndex < 0) continue;
+
+      routine[timeRange]![dayIndex].friends.add(FriendData(
+        name: friendName,
+        course: courseLabel,
+        room: room,
+      ));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // File picker
+  // ---------------------------------------------------------------------------
+
+  Future<void> _pickAdvisingSlipFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx'],
       );
 
-      if (result != null && result.files.isNotEmpty) {
-        final file = result.files.first;
-        final filename = file.name;
-
-        // ✅ Check extension
-        if (filename.toLowerCase().endsWith('.xlsx')) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('You selected: $filename')),
-          );
-
-          // Here you can pass file.path to your XLSX parser
-          print("File path: ${file.path}");
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Please select a .xlsx file')),
-          );
-        }
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No file selected')),
-        );
+      if (result == null || result.files.isEmpty) {
+        _showSnackBar('No file selected.');
+        return;
       }
+
+      final file = result.files.first;
+      if (!(file.name.toLowerCase().endsWith('.xlsx'))) {
+        _showSnackBar('Please select a .xlsx file.');
+        return;
+      }
+
+      final path = file.path;
+      if (path == null) {
+        _showSnackBar('Could not access file path.');
+        return;
+      }
+
+      final bytes = await File(path).readAsBytes();
+      await _applyAdvisingSlipFromFile(bytes);
     } catch (e) {
-      debugPrint("FilePicker error: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
+      debugPrint('_pickAdvisingSlipFile error: $e');
+      _showSnackBar('Error picking file: $e');
+    }
+  }
+
+  Future<void> _pickFriendSlipFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx'],
       );
-    }
-  }
-  
 
-  Future<void> applyAdvisingSlip(ex.Excel excel) async {
-    routine.clear();
-    times.clear();
-
-    final sheet = excel.tables.keys.contains('Sheet1') ? excel.tables['Sheet1'] : excel.tables.values.first;
-    if (sheet == null) return;
-
-    for (int row = 17, col = 2; row <= 21; row++, col += 51) {
-      final subjectCell = sheet.cell(ex.CellIndex.indexByColumnRow(columnIndex: col, rowIndex: row));
-      final baCell = sheet.cell(ex.CellIndex.indexByColumnRow(columnIndex: col + 51, rowIndex: row));
-
-      final subject = subjectCell.value?.toString().trim() ?? '';
-      final ba = baCell.value?.toString().trim() ?? '';
-
-      if (subject.isEmpty || ba.isEmpty) continue;
-
-      final parts = ba.split(' ');
-      if (parts.length < 2) continue;
-
-      final weekdayPart = parts[0];
-      final timeRange = parts.sublist(1).join(' ');
-
-      if (!times.contains(timeRange)) {
-        times.add(timeRange);
-        routine[timeRange] = List.generate(days.length, (_) => RoutineCellData());
+      if (result == null || result.files.isEmpty) {
+        _showSnackBar('No file selected.');
+        return;
       }
 
-      for (int i = 0; i < weekdayPart.length; i++) {
-        String letter = weekdayPart[i];
-        if (letter == 'T' && i + 1 < weekdayPart.length && weekdayPart[i + 1] == 'h') {
-          letter = 'Th';
-          i++;
-        }
-        final dayIndex = days.indexOf({
-          'M': 'Monday',
-          'T': 'Tuesday',
-          'W': 'Wednesday',
-          'Th': 'Thursday',
-          'F': 'Friday',
-          'S': 'Saturday',
-          'Su': 'Sunday',
-        }[letter] ?? '');
-        if (dayIndex >= 0) {
-          routine[timeRange]![dayIndex] =
-              routine[timeRange]![dayIndex].copyWith(course: subject);
-        }
+      final file = result.files.first;
+      if (!(file.name.toLowerCase().endsWith('.xlsx'))) {
+        _showSnackBar('Please select a .xlsx file.');
+        return;
       }
+
+      final path = file.path;
+      if (path == null) {
+        _showSnackBar('Could not access file path.');
+        return;
+      }
+
+      final bytes = await File(path).readAsBytes();
+      await _applyFriendSlipFromFile(bytes);
+    } catch (e) {
+      debugPrint('_pickFriendSlipFile error: $e');
+      _showSnackBar('Error picking friend file: $e');
     }
-
-    setState(() {});
-    await _saveRoutineData();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Advising slip applied in routine!')),
-    );
   }
 
-
-  Future<void> _saveRoutineToPdf() async {
-    final pdfDoc = pw.Document();
-
-    pdfDoc.addPage(
-      pw.Page(
-        build: (pw.Context context) {
-          return pw.Table(
-            border: pw.TableBorder.all(),
-            children: [
-              pw.TableRow(
-                children: [
-                  pw.Container(
-                    padding: pw.EdgeInsets.all(4),
-                    child: pw.Text('Day/Time', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                  ),
-                  ...times.map((t) => pw.Container(
-                    padding: pw.EdgeInsets.all(4),
-                    child: pw.Text(t, style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                  )),
-                ],
-              ),
-              ...days.asMap().entries.map((entry) {
-                final dayIdx = entry.key;
-                final day = entry.value;
-                return pw.TableRow(
-                  children: [
-                    pw.Container(
-                      padding: pw.EdgeInsets.all(4),
-                      child: pw.Text(day, style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                    ),
-                    ...times.map((time) {
-                      final cell = routine[time]![dayIdx];
-                      String cellText = '';
-                      if (cell.course.isNotEmpty) {
-                        cellText = cell.course;
-                        if (cell.room.isNotEmpty) cellText += '\n${cell.room}';
-                        if (cell.friends.isNotEmpty) cellText += '\n${cell.friends.length} friend${cell.friends.length > 1 ? 's' : ''}';
-                      } else if (cell.friends.isNotEmpty) {
-                        cellText = '${cell.friends.length} friend${cell.friends.length > 1 ? 's' : ''}';
-                      }
-                      return pw.Container(
-                        padding: pw.EdgeInsets.all(4),
-                        child: pw.Text(cellText),
-                      );
-                    }),
-                  ],
-                );
-              }),
-            ],
-          );
-        },
-      ),
-    );
-
-    await Printing.sharePdf(
-      bytes: await pdfDoc.save(),
-      filename: 'routine_${DateTime.now().millisecondsSinceEpoch}.pdf',
-    );
-  }
+  // ---------------------------------------------------------------------------
+  // Persistence
+  // ---------------------------------------------------------------------------
 
   Future<void> _loadRoutineData() async {
     final prefs = await SharedPreferences.getInstance();
     final timesStr = prefs.getString('routine_times');
     final routineStr = prefs.getString('routine_data');
     if (!mounted) return;
-    if (timesStr != null && routineStr != null) {
-      final loadedTimes = List<String>.from(json.decode(timesStr));
+    if (timesStr == null || routineStr == null) return;
 
-      // Decompress routineStr
+    try {
+      final loadedTimes = List<String>.from(json.decode(timesStr) as List);
       final compressedBytes = base64Decode(routineStr);
       final decompressedBytes = zlib.decode(compressedBytes);
       final decompressedRoutineStr = utf8.decode(decompressedBytes);
+      final loadedRoutineMap =
+      json.decode(decompressedRoutineStr) as Map<String, dynamic>;
 
-      final loadedRoutineMap = json.decode(decompressedRoutineStr) as Map<String, dynamic>;
       final loadedRoutine = <String, List<RoutineCellData>>{};
       loadedRoutineMap.forEach((key, value) {
-        loadedRoutine[key] = (value as List)
-            .map((cell) => RoutineCellData.fromJson(cell))
-            .toList();
+        loadedRoutine[key] =
+            (value as List).map((cell) => RoutineCellData.fromJson(cell as Map<String, dynamic>)).toList();
       });
+
       setState(() {
         times = loadedTimes;
         routine = loadedRoutine;
       });
+    } catch (e) {
+      debugPrint('_loadRoutineData error: $e');
     }
   }
 
   Future<void> _saveRoutineData() async {
     final prefs = await SharedPreferences.getInstance();
     final timesStr = json.encode(times);
-    final routineMap = routine.map((key, value) =>
-        MapEntry(key, value.map((cell) => cell.toJson()).toList()));
+    final routineMap = routine.map(
+          (key, value) => MapEntry(key, value.map((cell) => cell.toJson()).toList()),
+    );
     final routineStr = json.encode(routineMap);
     final compressedRoutine = zlib.encode(utf8.encode(routineStr));
     final compressedRoutineBase64 = base64Encode(compressedRoutine);
-
     await prefs.setString('routine_times', timesStr);
     await prefs.setString('routine_data', compressedRoutineBase64);
   }
 
+  // ---------------------------------------------------------------------------
+  // Export
+  // ---------------------------------------------------------------------------
+
+  Future<void> _saveRoutineAsPng() async {
+    try {
+      final boundary =
+      _routineKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
+      final image = await boundary.toImage(pixelRatio: 3.0);
+      final byteData = await image.toByteData(format: ImageByteFormat.png);
+      if (byteData == null) {
+        _showSnackBar('Failed to capture routine image.');
+        return;
+      }
+      final pngBytes = byteData.buffer.asUint8List();
+      final dir = await getApplicationDocumentsDirectory();
+      final filePath =
+          '${dir.path}/routine_${DateTime.now().millisecondsSinceEpoch}.png';
+      await File(filePath).writeAsBytes(pngBytes);
+      if (!mounted) return;
+      _showSnackBar('Routine saved to Downloads: $filePath');
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackBar('Failed to save PNG: $e');
+    }
+  }
+
+  Future<void> _saveRoutineAsPdf() async {
+    final pdfDoc = pw.Document();
+    pdfDoc.addPage(
+      pw.Page(
+        build: (pw.Context context) {
+          return pw.Table(
+            border: pw.TableBorder.all(),
+            children: [
+              pw.TableRow(children: [
+                _pdfCell('Day/Time', bold: true),
+                ...times.map((t) => _pdfCell(t, bold: true)),
+              ]),
+              ...days.asMap().entries.map((entry) {
+                final dayIdx = entry.key;
+                return pw.TableRow(children: [
+                  _pdfCell(days[dayIdx], bold: true),
+                  ...times.map((time) {
+                    final cells = routine[time];
+                    if (cells == null || dayIdx >= cells.length) {
+                      return _pdfCell('');
+                    }
+                    final cell = cells[dayIdx];
+                    final parts = <String>[
+                      if (cell.course.isNotEmpty) cell.course,
+                      if (cell.room.isNotEmpty) cell.room,
+                      if (cell.friends.isNotEmpty)
+                        '${cell.friends.length} friend${cell.friends.length > 1 ? 's' : ''}',
+                    ];
+                    return _pdfCell(parts.join('\n'));
+                  }),
+                ]);
+              }),
+            ],
+          );
+        },
+      ),
+    );
+    await Printing.sharePdf(
+      bytes: await pdfDoc.save(),
+      filename: 'routine_${DateTime.now().millisecondsSinceEpoch}.pdf',
+    );
+  }
+
+  pw.Widget _pdfCell(String text, {bool bold = false}) {
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(4),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dialogs — Add / Remove time slots
+  // ---------------------------------------------------------------------------
+
   void _showAddTimeDialog() async {
-    // Popup: Add Time Slot dialog
-    List<String> availableTimes = [
-      ...allTimes.where((t) => t == 'Custom' || !times.contains(t))
+    final availableTimes = [
+      ...allTimes.where((t) => t == 'Custom' || !times.contains(t)),
     ];
-    String selectedTime = availableTimes[0];
+    if (availableTimes.isEmpty) {
+      _showSnackBar('All preset time slots are already added.');
+      return;
+    }
+
+    String selectedTime = availableTimes.first;
     String customTime = '';
-    int insertIndex = times.length; // default to end
+    int insertIndex = times.length;
 
-    String? result = await showDialog<String>(
+    final result = await showDialog<String>(
       context: context,
-      builder: (context) {
-        // Popup: DropdownMenuTheme for Add Time Slot dialog
-        return DropdownMenuTheme(
-          data: DropdownMenuThemeData(
-            menuStyle: MenuStyle(
-              backgroundColor: WidgetStatePropertyAll(Colors.blueGrey[900]),
-              shape: WidgetStatePropertyAll(
-                RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              elevation: WidgetStatePropertyAll(2),
+      builder: (context) => DropdownMenuTheme(
+        data: DropdownMenuThemeData(
+          menuStyle: MenuStyle(
+            backgroundColor: WidgetStatePropertyAll(Colors.blueGrey[900]),
+            shape: WidgetStatePropertyAll(
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
+            elevation: const WidgetStatePropertyAll(2),
           ),
-          child: StatefulBuilder(
-            builder: (context, setState) => AlertDialog(
-              title: Text('Add Time Slot'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Dropdown: Time selection dropdown styled like "At end"
-                  DropdownButtonFormField<String>(
-                    initialValue: selectedTime,
-                    isExpanded: true,
-                    icon: Icon(Icons.arrow_drop_down),
+        ),
+        child: StatefulBuilder(
+          builder: (context, setLocalState) => AlertDialog(
+            title: const Text('Add Time Slot'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: selectedTime,
+                  isExpanded: true,
+                  decoration: _dropdownDecoration(),
+                  items: availableTimes
+                      .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                      .toList(),
+                  onChanged: (val) => setLocalState(() => selectedTime = val!),
+                ),
+                if (selectedTime == 'Custom') ...[
+                  const SizedBox(height: 12),
+                  TextField(
                     decoration: InputDecoration(
+                      labelText: 'Custom Time',
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      filled: true,
-                      fillColor: Colors.blueGrey[50],
+                          borderRadius: BorderRadius.circular(12)),
                     ),
-                    items: availableTimes
-                        .map((t) => DropdownMenuItem<String>(
-                              value: t,
-                              child: Text(t),
-                            ))
-                        .toList(),
-                    onChanged: (val) => setState(() => selectedTime = val!),
-                  ),
-
-                  // TextField: Custom time input (shown if "Custom" selected)
-                  if (selectedTime == 'Custom') ...[
-                    SizedBox(height: 12),
-                    TextField(
-                      decoration: InputDecoration(
-                        labelText: 'Custom Time',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      onChanged: (val) => customTime = val,
-                    ),
-                  ],
-
-                  // Dropdown: Insert position dropdown ("At end" or before a time)
-                  SizedBox(height: 12),
-                  DropdownButtonFormField<int>(
-                    initialValue: insertIndex,
-                    isExpanded: true,
-                    icon: Icon(Icons.arrow_drop_down),
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      filled: true,
-                      fillColor: Colors.blueGrey[50],
-                    ),
-                    items: [
-                      for (int i = 0; i <= times.length; i++)
-                        DropdownMenuItem(
-                          value: i,
-                          child: Text(
-                            i == times.length ? 'At end' : 'Before "${times[i]}"',
-                          ),
-                        ),
-                    ],
-                    onChanged: (val) => setState(() => insertIndex = val!),
+                    onChanged: (val) => customTime = val,
                   ),
                 ],
-              ),
-              actions: [
-                // Button: Cancel add time
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  style: TextButton.styleFrom(foregroundColor: Colors.black),
-                  child: Text('Cancel'),
-                ),
-                // Button: Confirm add time
-                ElevatedButton(
-                  onPressed: () {
-                    String timeToAdd =
-                        selectedTime == 'Custom' ? customTime.trim() : selectedTime;
-                    if (timeToAdd.isEmpty || times.contains(timeToAdd)) {
-                      Navigator.pop(context);
-                      return;
-                    }
-                    Navigator.pop(context, '$timeToAdd|$insertIndex');
-                  },
-                  style: ElevatedButton.styleFrom(
-                    foregroundColor: Colors.black,
-                    backgroundColor: Colors.blue,
-                  ),
-                  child: Text('Add'),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<int>(
+                  initialValue: insertIndex,
+                  isExpanded: true,
+                  decoration: _dropdownDecoration(),
+                  items: [
+                    for (int i = 0; i <= times.length; i++)
+                      DropdownMenuItem(
+                        value: i,
+                        child: Text(
+                          i == times.length ? 'At end' : 'Before "${times[i]}"',
+                        ),
+                      ),
+                  ],
+                  onChanged: (val) => setLocalState(() => insertIndex = val!),
                 ),
               ],
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                style: TextButton.styleFrom(foregroundColor: Colors.black),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  final timeToAdd =
+                  selectedTime == 'Custom' ? customTime.trim() : selectedTime;
+                  if (timeToAdd.isEmpty || times.contains(timeToAdd)) {
+                    Navigator.pop(context);
+                    return;
+                  }
+                  Navigator.pop(context, '$timeToAdd|$insertIndex');
+                },
+                style: ElevatedButton.styleFrom(
+                  foregroundColor: Colors.black,
+                  backgroundColor: Colors.blue,
+                ),
+                child: const Text('Add'),
+              ),
+            ],
           ),
-        );
-      },
+        ),
+      ),
     );
 
     if (!mounted || result == null || result.isEmpty) return;
-
     final parts = result.split('|');
     final timeToAdd = parts[0];
-    final idx = int.parse(parts[1]);
+    final idx = int.tryParse(parts[1]) ?? times.length;
     if (!times.contains(timeToAdd)) {
       setState(() {
         times.insert(idx, timeToAdd);
@@ -443,85 +758,54 @@ class _RoutinePageState extends State<RoutinePage> {
     }
   }
 
-  void _showRemoveTimeDialog() async {
-    // Popup: Remove Time Slot dialog
-    if (times.isEmpty) return;
-    List<String> uniqueTimes = times.toSet().toList();
-    String selectedTime = uniqueTimes[0];
+  void _showRemoveTimeSlotDialog() async {
+    if (times.isEmpty) {
+      _showSnackBar('No time slots to remove.');
+      return;
+    }
+
+    final uniqueTimes = times.toSet().toList();
+    String selectedTime = uniqueTimes.first;
     bool removed = false;
+
     await showDialog(
       context: context,
-      builder: (context) {
-        // Popup: DropdownMenuTheme for Remove Time Slot dialog
-        return DropdownMenuTheme(
-          data: DropdownMenuThemeData(
-            menuStyle: MenuStyle(
-              backgroundColor: WidgetStateProperty.all(Colors.blueGrey[50]),
-              shape: WidgetStateProperty.all(
-                RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocalState) => AlertDialog(
+          title: const Text('Remove Time Slot'),
+          content: DropdownButtonFormField<String>(
+            initialValue: selectedTime,
+            isExpanded: true,
+            decoration: _dropdownDecoration(),
+            items: uniqueTimes
+                .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                .toList(),
+            onChanged: (val) => setLocalState(() => selectedTime = val!),
           ),
-          child: StatefulBuilder(
-            builder: (context, setState) => AlertDialog(
-              title: Text('Remove Time Slot'),
-              // Dropdown: Select time to remove
-              content: DropdownButtonFormField<String>(
-                initialValue: selectedTime,
-                isExpanded: true,
-                icon: Icon(Icons.arrow_drop_down),
-                decoration: InputDecoration(
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  filled: true,
-                  fillColor: Colors.blueGrey[50],
-                ),
-                items: uniqueTimes.map((t) {
-                  return DropdownMenuItem(
-                    value: t,
-                    child: Text(t),
-                  );
-                }).toList(),
-                onChanged: (val) {
-                  setState(() {
-                    selectedTime = val!;
-                  });
-                },
-              ),
-              actions: [
-                // Button: Cancel remove time
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  style: TextButton.styleFrom(foregroundColor: Colors.black),
-                  child: Text('Cancel'),
-                ),
-                // Button: Confirm remove time
-                ElevatedButton(
-                  onPressed: () {
-                    setState(() {
-                      times.removeWhere((tt) => tt == selectedTime);
-                      routine.remove(selectedTime);
-                      removed = true;
-                    });
-                    Navigator.pop(context);
-                  },
-                  style: ElevatedButton.styleFrom(
-                    foregroundColor: Colors.black,
-                    backgroundColor: Colors.red,
-                  ),
-                  child: Text('Remove'),
-                ),
-              ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              child: const Text('Cancel'),
             ),
-          ),
-        );
-      },
+            ElevatedButton(
+              onPressed: () {
+                times.removeWhere((t) => t == selectedTime);
+                routine.remove(selectedTime);
+                removed = true;
+                Navigator.pop(context);
+              },
+              style: ElevatedButton.styleFrom(
+                foregroundColor: Colors.black,
+                backgroundColor: Colors.red,
+              ),
+              child: const Text('Remove'),
+            ),
+          ],
+        ),
+      ),
     );
+
     if (!mounted) return;
     if (removed) {
       setState(() {});
@@ -529,469 +813,557 @@ class _RoutinePageState extends State<RoutinePage> {
     }
   }
 
+  void _showRemoveOptions() async {
+    final fabBox =
+    _removeFabKey.currentContext!.findRenderObject() as RenderBox;
+    final fabOffset = fabBox.localToGlobal(Offset.zero);
+    final fabSize = fabBox.size;
+
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        fabOffset.dx + (fabSize.width - 170) / 2,
+        fabOffset.dy - 130,
+        fabOffset.dx + fabSize.width,
+        fabOffset.dy,
+      ),
+      elevation: 8,
+      color: Colors.blueGrey[900],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      items: [
+        _buildPopupItem('time', Icons.schedule, 'Time Slot', Colors.red),
+        _buildPopupItem('day', Icons.calendar_view_day, 'Day', Colors.orange),
+        _buildPopupItem('course', Icons.book, 'Course', Colors.purple),
+        _buildPopupItem('all', Icons.delete_forever, 'All', Colors.grey),
+      ],
+    );
+    if (!mounted) return;
+    if (selected == 'time') _showRemoveTimeSlotDialog();
+    if (selected == 'day') await _showRemoveDayDialog();
+    if (selected == 'course') await _showRemoveCourseDialog();
+    if (selected == 'all') await _showRemoveAllDialog();
+  }
+
+  Future<void> _showRemoveDayDialog() async {
+    if (days.length <= 1) {
+      _showSnackBar('At least one day must remain.');
+      return;
+    }
+
+    String selectedDay = days.first;
+    bool removed = false;
+
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocalState) => AlertDialog(
+          title: const Text('Remove Day'),
+          content: DropdownButtonFormField<String>(
+            initialValue: selectedDay,
+            isExpanded: true,
+            decoration: _dropdownDecoration(),
+            items: days
+                .map((d) => DropdownMenuItem(value: d, child: Text(d)))
+                .toList(),
+            onChanged: (val) => setLocalState(() => selectedDay = val!),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final idx = days.indexOf(selectedDay);
+                if (idx < 0) return;
+                for (final time in times) {
+                  final cells = routine[time];
+                  if (cells != null && idx < cells.length) {
+                    cells.removeAt(idx);
+                  }
+                }
+                days.removeAt(idx);
+                removed = true;
+                Navigator.pop(context);
+              },
+              style: ElevatedButton.styleFrom(
+                foregroundColor: Colors.black,
+                backgroundColor: Colors.red,
+              ),
+              child: const Text('Remove'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+    if (removed) {
+      setState(() {});
+      await _saveRoutineData();
+    }
+  }
+
+  Future<void> _showRemoveCourseDialog() async {
+    final allCourses = <String>{};
+    for (final entry in routine.entries) {
+      for (final cell in entry.value) {
+        if (cell.course.trim().isNotEmpty) {
+          allCourses.add(cell.course.trim());
+        }
+      }
+    }
+    if (allCourses.isEmpty) {
+      _showSnackBar('No courses to remove.');
+      return;
+    }
+
+    final sortedCourses = allCourses.toList()..sort();
+    String selectedCourse = sortedCourses.first;
+    bool removed = false;
+
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocalState) => AlertDialog(
+          title: const Text('Remove Course'),
+          content: DropdownButtonFormField<String>(
+            initialValue: selectedCourse,
+            isExpanded: true,
+            decoration: _dropdownDecoration(),
+            items: sortedCourses
+                .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                .toList(),
+            onChanged: (val) => setLocalState(() => selectedCourse = val!),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                for (final time in times) {
+                  final cells = routine[time];
+                  if (cells == null) continue;
+                  for (int i = 0; i < cells.length; i++) {
+                    if (cells[i].course.trim() == selectedCourse) {
+                      cells[i] = cells[i].copyWith(course: '', room: '');
+                    }
+                  }
+                }
+                removed = true;
+                Navigator.pop(context);
+              },
+              style: ElevatedButton.styleFrom(
+                foregroundColor: Colors.black,
+                backgroundColor: Colors.red,
+              ),
+              child: const Text('Remove'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+    if (removed) {
+      setState(() {});
+      await _saveRoutineData();
+    }
+  }
+
+  Future<void> _showRemoveAllDialog() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove All'),
+        content: const Text('Clear all routine data, time slots, and reset days?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              foregroundColor: Colors.black,
+              backgroundColor: Colors.red,
+            ),
+            child: const Text('Clear All'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    routine.clear();
+    times.clear();
+    days = [...kAllDays];
+    setState(() {});
+    await _saveRoutineData();
+    _showSnackBar('All data cleared.');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dialogs — Cell info / Add class / Add friend
+  // ---------------------------------------------------------------------------
+
   void _showCellDialog(int dayIdx, String time) async {
-    // Popup: Cell info dialog (shows class/friends info for a cell)
-    final cell = routine[time]![dayIdx];
-    if (cell.isEmpty) {
+    final cells = routine[time];
+    if (cells == null || dayIdx >= cells.length) return;
+
+    if (cells[dayIdx].isEmpty) {
       await showDialog(
         context: context,
-        builder: (context) {
-          // Popup: No class info dialog
-          return AlertDialog(
-            title: Text('No class'),
-            content: Text('No class info for this slot.'),
-            actions: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  // Button: Add class from empty cell dialog
-                  TextButton(
-                    onPressed: () async {
-                      Navigator.pop(context);
-                      await _showAddClassDialog(dayIdx, time);
-                    },
-                    style: TextButton.styleFrom(foregroundColor: Colors.black),
-                    child: Text('Add Class'),
-                  ),
-                  SizedBox(width: 8),
-                  // Button: Add friend from empty cell dialog
-                  TextButton(
-                    onPressed: () async {
-                      Navigator.pop(context);
-                      await _showAddFriendDialog(dayIdx, time);
-                    },
-                    style: TextButton.styleFrom(foregroundColor: Colors.black),
-                    child: Text('Add Friend'),
-                  ),
-                ],
-              ),
-            ],
-          );
-        },
+        builder: (context) => AlertDialog(
+          title: const Text('No class'),
+          content: const Text('No class info for this slot.'),
+          actions: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(context);
+                    await _showAddClassDialog(dayIdx, time);
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.black),
+                  child: const Text('Add Class'),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(context);
+                    await _showAddFriendDialog(dayIdx, time);
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.black),
+                  child: const Text('Add Friend'),
+                ),
+              ],
+            ),
+          ],
+        ),
       );
     } else {
       await showDialog(
         context: context,
-        builder: (context) {
-          // Popup: Class info dialog (shows class/friends details)
-          return StatefulBuilder(
-            builder: (context, setStateDialog) {
-              List<Widget> infoWidgets = [];
-              if (cell.course.isNotEmpty) {
-                infoWidgets.add(
-                  ListTile(
-                    title: Text('Class'),
-                    subtitle: Text('${cell.course}\n${cell.room}'),
-                    // Button: Delete class from cell
-                    trailing: IconButton(
-                      icon: Icon(Icons.delete, color: Colors.red),
-                      onPressed: () {
-                        routine[time]![dayIdx] = cell.copyWith(course: '', room: '');
-                        setState(() {});
-                        setStateDialog(() {});
-                        _saveRoutineData();
-                      },
-                    ),
-                  ),
-                );
-              }
-              if (cell.friends.isNotEmpty) {
-                infoWidgets.add(
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8.0),
-                    child: Text('Friends:', style: TextStyle(fontWeight: FontWeight.bold)),
-                  ),
-                );
-                for (int i = 0; i < cell.friends.length; i++) {
-                  final friend = cell.friends[i];
-                  infoWidgets.add(
-                    ListTile(
-                      title: Text(friend.name),
-                      subtitle: Text('${friend.course}\n${friend.room}'),
-                      // Button: Delete friend from cell
-                      trailing: IconButton(
-                        icon: Icon(Icons.delete, color: Colors.red),
-                        onPressed: () {
-                          cell.friends.removeAt(i);
-                          setState(() {});
-                          setStateDialog(() {});
-                          _saveRoutineData();
-                        },
-                      ),
-                    ),
-                  );
-                }
-              }
-              return AlertDialog(
-                title: Text('Class Info:'),
-                content: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: infoWidgets,
-                  ),
+        builder: (context) => StatefulBuilder(
+          builder: (context, setStateDialog) {
+            // Re-read cell every rebuild so deletions are reflected immediately
+            final cell = routine[time]![dayIdx];
+            final infoWidgets = <Widget>[];
+
+            if (cell.course.isNotEmpty) {
+              infoWidgets.add(ListTile(
+                title: const Text('Class'),
+                subtitle: Text('${cell.course}\n${cell.room}'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete, color: Colors.red),
+                  onPressed: () async {
+                    routine[time]![dayIdx] =
+                        cell.copyWith(course: '', room: '');
+                    setState(() {});
+                    setStateDialog(() {});
+                    await _saveRoutineData();
+                  },
                 ),
-                actions: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      if (cell.course.isEmpty)
-                        // Button: Add class from info dialog
-                        ElevatedButton(
-                          onPressed: () async {
-                            Navigator.pop(context);
-                            await _showAddClassDialog(dayIdx, time);
-                          },
-                          style: TextButton.styleFrom(foregroundColor: Colors.black),
-                          child: Text('Add Class'),
-                        ),
-                      SizedBox(width: 8),
-                      // Button: Add friend from info dialog
+              ));
+            }
+
+            if (cell.friends.isNotEmpty) {
+              infoWidgets.add(const Padding(
+                padding: EdgeInsets.only(top: 8.0),
+                child: Text('Friends:',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+              ));
+              for (int i = 0; i < cell.friends.length; i++) {
+                final friend = cell.friends[i];
+                infoWidgets.add(ListTile(
+                  title: Text(friend.name),
+                  subtitle: Text('${friend.course}\n${friend.room}'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () async {
+                      routine[time]![dayIdx].friends.removeAt(i);
+                      setState(() {});
+                      setStateDialog(() {});
+                      await _saveRoutineData();
+                    },
+                  ),
+                ));
+              }
+            }
+
+            return AlertDialog(
+              title: const Text('Class Info'),
+              content: SingleChildScrollView(
+                child: Column(
+                    mainAxisSize: MainAxisSize.min, children: infoWidgets),
+              ),
+              actions: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    if (cell.course.isEmpty)
                       ElevatedButton(
                         onPressed: () async {
                           Navigator.pop(context);
-                          await _showAddFriendDialog(dayIdx, time);
+                          await _showAddClassDialog(dayIdx, time);
                         },
-                        style: TextButton.styleFrom(foregroundColor: Colors.black),
-                        child: Text('Add Friend'),
+                        style:
+                        TextButton.styleFrom(foregroundColor: Colors.black),
+                        child: const Text('Add Class'),
                       ),
-                    ],
-                  ),
-                ],
-              );
-            },
-          );
-        },
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () async {
+                        Navigator.pop(context);
+                        await _showAddFriendDialog(dayIdx, time);
+                      },
+                      style:
+                      TextButton.styleFrom(foregroundColor: Colors.black),
+                      child: const Text('Add Friend'),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
       );
     }
   }
 
   Future<void> _showAddClassDialog(int dayIdx, String time) async {
-    // Popup: Add Class dialog
     String course = '';
     String room = '';
     await showDialog(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('Add Class'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // TextField: Course name input
-              TextField(
-                decoration: InputDecoration(labelText: 'Course Name'),
-                onChanged: (val) => course = val,
-              ),
-              SizedBox(height: 12),
-              // TextField: Room number input
-              TextField(
-                decoration: InputDecoration(labelText: 'Room Number'),
-                onChanged: (val) => room = val,
-              ),
-            ],
-          ),
-          actions: [
-            // Button: Cancel add class
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(foregroundColor: Colors.black),
-              child: Text('Cancel'),
+      builder: (context) => AlertDialog(
+        title: const Text('Add Class'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              decoration: const InputDecoration(labelText: 'Course Name'),
+              onChanged: (val) => course = val,
             ),
-            // Button: Save class
-            ElevatedButton(
-              onPressed: () {
-                if (course.trim().isNotEmpty || room.trim().isNotEmpty) {
-                  routine[time]![dayIdx] = routine[time]![dayIdx].copyWith(
-                    course: course.trim(),
-                    room: room.trim(),
-                  );
-                  setState(() {});
-                  _saveRoutineData();
-                }
-                Navigator.pop(context);
-              },
-              style: TextButton.styleFrom(foregroundColor: Colors.black),
-              child: Text('Save'),
+            const SizedBox(height: 12),
+            TextField(
+              decoration: const InputDecoration(labelText: 'Room Number'),
+              onChanged: (val) => room = val,
             ),
           ],
-        );
-      },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (course.trim().isNotEmpty || room.trim().isNotEmpty) {
+                routine[time]![dayIdx] = routine[time]![dayIdx].copyWith(
+                  course: course.trim(),
+                  room: room.trim(),
+                );
+                setState(() {});
+                await _saveRoutineData();
+              }
+              if (context.mounted) Navigator.pop(context);
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
     );
   }
 
   Future<void> _showAddFriendDialog(int dayIdx, String time) async {
-    // Popup: Add Friend dialog
     String friendName = '';
     String friendCourse = '';
     String friendRoom = '';
     await showDialog(
       context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('Add Friend'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // TextField: Friend name input
-              TextField(
-                decoration: InputDecoration(labelText: 'Friend Name'),
-                onChanged: (val) => friendName = val,
-              ),
-              SizedBox(height: 12),
-              // TextField: Friend course input
-              TextField(
-                decoration: InputDecoration(labelText: 'Course Name'),
-                onChanged: (val) => friendCourse = val,
-              ),
-              SizedBox(height: 12),
-              // TextField: Friend room input
-              TextField(
-                decoration: InputDecoration(labelText: 'Room Number'),
-                onChanged: (val) => friendRoom = val,
-              ),
-            ],
-          ),
-          actions: [
-            // Button: Cancel add friend
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(foregroundColor: Colors.black),
-              child: Text('Cancel'),
+      builder: (context) => AlertDialog(
+        title: const Text('Add Friend'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              decoration: const InputDecoration(labelText: 'Friend Name'),
+              onChanged: (val) => friendName = val,
             ),
-            // Button: Save friend
-            ElevatedButton(
-              onPressed: () {
-                if (friendName.trim().isNotEmpty ||
-                    friendCourse.trim().isNotEmpty ||
-                    friendRoom.trim().isNotEmpty) {
-                  final cell = routine[time]![dayIdx];
-                  cell.friends.add(FriendData(
-                    name: friendName.trim(),
-                    course: friendCourse.trim(),
-                    room: friendRoom.trim(),
-                  ));
-                  setState(() {});
-                  _saveRoutineData();
-                }
-                Navigator.pop(context);
-              },
-              style: TextButton.styleFrom(foregroundColor: Colors.black),
-              child: Text('Save'),
+            const SizedBox(height: 12),
+            TextField(
+              decoration: const InputDecoration(labelText: 'Course Name'),
+              onChanged: (val) => friendCourse = val,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              decoration: const InputDecoration(labelText: 'Room Number'),
+              onChanged: (val) => friendRoom = val,
             ),
           ],
-        );
-      },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (friendName.trim().isNotEmpty ||
+                  friendCourse.trim().isNotEmpty ||
+                  friendRoom.trim().isNotEmpty) {
+                routine[time]![dayIdx].friends.add(FriendData(
+                  name: friendName.trim(),
+                  course: friendCourse.trim(),
+                  room: friendRoom.trim(),
+                ));
+                setState(() {});
+                await _saveRoutineData();
+              }
+              if (context.mounted) Navigator.pop(context);
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
     );
   }
 
-  Future<void> _saveRoutineToDownloads() async {
-    // Button: Save routine as PNG to Downloads
-    try {
-      RenderRepaintBoundary boundary =
-      _routineKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
-      var image = await boundary.toImage(pixelRatio: 3.0);
-      ByteData? byteData = await image.toByteData(format: ImageByteFormat.png);
-      if (byteData == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to capture routine image.')),
-        );
-        return;
-      }
-      Uint8List pngBytes = byteData!.buffer.asUint8List();
-
-      final downloadsDir = Directory('/storage/emulated/0/Download');
-      if (!downloadsDir.existsSync()) {
-        throw Exception('Downloads folder not found');
-      }
-      final filePath =
-          '${downloadsDir.path}/routine_${DateTime.now().millisecondsSinceEpoch}.png';
-      final file = File(filePath);
-      await file.writeAsBytes(pngBytes);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Routine saved to Downloads: $filePath')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to save: $e')),
-      );
-    }
-  }
+  // ---------------------------------------------------------------------------
+  // FAB menus
+  // ---------------------------------------------------------------------------
 
   void _showSaveOptions() async {
-    // Popup: Save options menu (Save as PNG, Save as PDF)
-    final RenderBox fabRenderBox =
+    final fabBox =
     _saveFabKey.currentContext!.findRenderObject() as RenderBox;
-    final Offset fabOffset = fabRenderBox.localToGlobal(Offset.zero);
-    final Size fabSize = fabRenderBox.size;
+    final fabOffset = fabBox.localToGlobal(Offset.zero);
+    final fabSize = fabBox.size;
 
     final selected = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
-        fabOffset.dx + fabSize.width - 170,
+        fabOffset.dx + (fabSize.width - 170) / 2,
         fabOffset.dy - 130,
         fabOffset.dx + fabSize.width,
         fabOffset.dy,
       ),
-      items: [
-        // Button: Save as PNG
-        PopupMenuItem(
-          value: 'save1',
-          child: Material(
-            color: Colors.green[100],
-            borderRadius: BorderRadius.circular(12),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
-              splashColor: Colors.green[200],
-              highlightColor: Colors.green[300],
-              onTap: () {
-                Navigator.pop(context, 'save1'); // close menu on tap
-              },
-              child: Container(
-                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                child: Row(
-                  children: [
-                    Icon(Icons.image, color: Colors.green[700]),
-                    SizedBox(width: 8),
-                    Text('Save as PNG',
-                        style: TextStyle(color: Colors.green[900])),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-        // Button: Save as PDF
-        PopupMenuItem(
-          value: 'save2',
-          child: Material(
-            color: Colors.blue[100],
-            borderRadius: BorderRadius.circular(12),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
-              splashColor: Colors.blue[200],
-              highlightColor: Colors.blue[300],
-              onTap: () {
-                Navigator.pop(context, 'save2');
-              },
-              child: Container(
-                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                child: Row(
-                  children: [
-                    Icon(Icons.picture_as_pdf, color: Colors.blue[700]),
-                    SizedBox(width: 8),
-                    Text('Save as PDF',
-                        style: TextStyle(color: Colors.blue[900])),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
       elevation: 8,
       color: Colors.blueGrey[900],
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      items: [
+        _buildPopupItem('save_png', Icons.image, 'Save as PNG', Colors.green),
+        _buildPopupItem(
+            'save_pdf', Icons.picture_as_pdf, 'Save as PDF', Colors.blue),
+      ],
     );
     if (!mounted) return;
-    if (selected == 'save1') {
-      await _saveRoutineToDownloads();
-    } else if (selected == 'save2') {
-      await _saveRoutineToPdf();
-    }
+    if (selected == 'save_png') await _saveRoutineAsPng();
+    if (selected == 'save_pdf') await _saveRoutineAsPdf();
   }
 
   void _showAddOptions() async {
-    // Popup: Add options menu (Manual, Advising Slip)
-    final RenderBox fabRenderBox =
-      _saveFabKey.currentContext!.findRenderObject() as RenderBox;
-    final Offset fabOffset = fabRenderBox.localToGlobal(Offset.zero);
-    final Size fabSize = fabRenderBox.size;
+    final fabBox =
+    _addFabKey.currentContext!.findRenderObject() as RenderBox;
+    final fabOffset = fabBox.localToGlobal(Offset.zero);
+    final fabSize = fabBox.size;
 
     final selected = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
-        fabOffset.dx + fabSize.width - 170,
+        fabOffset.dx + (fabSize.width - 170) / 2,
         fabOffset.dy - 130,
         fabOffset.dx + fabSize.width,
         fabOffset.dy,
       ),
-      items: [
-        // Button: Manual add time
-        PopupMenuItem(
-          value: 'manual',
-          child: Material(
-            color: Colors.green[100], // switched from blue[100]
-            borderRadius: BorderRadius.circular(12),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
-              splashColor: Colors.green[200], // switched from blue[200]
-              highlightColor: Colors.green[300], // switched from blue[300]
-              onTap: () {
-                Navigator.pop(context, 'manual');
-              },
-              child: Container(
-                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                child: Row(
-                  children: [
-                    Icon(Icons.edit, color: Colors.green[700]), // switched from blue[700]
-                    SizedBox(width: 8),
-                    Text('Manual',
-                        style: TextStyle(color: Colors.green[900])), // switched from blue[900]
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-        // Button: Advising slip
-        PopupMenuItem(
-          value: 'advising',
-          child: Material(
-            color: Colors.blue[100], // switched from green[100]
-            borderRadius: BorderRadius.circular(12),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
-              splashColor: Colors.blue[200], // switched from green[200]
-              highlightColor: Colors.blue[300], // switched from green[300]
-              onTap: () {
-                Navigator.pop(context, 'advising');
-              },
-              child: Container(
-                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                child: Row(
-                  children: [
-                    Icon(Icons.receipt_long, color: Colors.blue[700]), // switched from green[700]
-                    SizedBox(width: 8),
-                    Text('Advising Slip',
-                        style: TextStyle(color: Colors.blue[900])), // switched from green[900]
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
       elevation: 8,
       color: Colors.blueGrey[900],
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      items: [
+        _buildPopupItem('manual', Icons.edit, 'Manual', Colors.green),
+        _buildPopupItem(
+            'advising', Icons.receipt_long, 'Advising Slip', Colors.blue),
+        _buildPopupItem(
+            'friend_slip', Icons.person_add, 'Friend Slip', Colors.teal),
+      ],
     );
     if (!mounted) return;
-    if (selected == 'manual') {
-      _showAddTimeDialog();
-    } else if (selected == 'advising') {
-      await pickFile(context);
-    }
+    if (selected == 'manual') _showAddTimeDialog();
+    if (selected == 'advising') await _pickAdvisingSlipFile();
+    if (selected == 'friend_slip') await _pickFriendSlipFile();
   }
+
+  PopupMenuItem<String> _buildPopupItem(
+      String value,
+      IconData icon,
+      String label,
+      MaterialColor color,
+      ) {
+    return PopupMenuItem(
+      value: value,
+      padding: EdgeInsets.zero,
+      child: Material(
+        color: color[100],
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          splashColor: color[200],
+          highlightColor: color[300],
+          onTap: () => Navigator.pop(context, value),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+            child: Row(
+              children: [
+                Icon(icon, color: color[700]),
+                const SizedBox(width: 8),
+                Text(label, style: TextStyle(color: color[900])),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  InputDecoration _dropdownDecoration() => InputDecoration(
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide.none,
+    ),
+    contentPadding:
+    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    filled: true,
+    fillColor: Colors.blueGrey[50],
+  );
+
+  void _showSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
-    final double totalTimeColWidth = times.length * (timeColWidth + cellMargin);
+    final double totalTimeColWidth =
+        times.length * (timeColWidth + cellMargin);
     final double tableWidth = dayColWidth + totalTimeColWidth;
 
     return Scaffold(
@@ -1007,9 +1379,9 @@ class _RoutinePageState extends State<RoutinePage> {
             letterSpacing: 1.2,
             shadows: [
               Shadow(
-                offset: Offset(1, 2),
+                offset: const Offset(1, 2),
                 blurRadius: 6,
-                color: Colors.black.withAlpha(102), // 0.4 * 255 ≈ 102
+                color: Colors.black.withAlpha(102),
               ),
             ],
           ),
@@ -1033,90 +1405,49 @@ class _RoutinePageState extends State<RoutinePage> {
                     key: _routineKey,
                     child: Column(
                       children: [
+                        // Header row
                         Container(
-                          decoration: BoxDecoration(
-                            color: Colors.blue[900],
-                          ),
+                          color: Colors.blue[900],
                           child: Row(
                             children: [
-                              Container(
-                                width: dayColWidth,
-                                padding: EdgeInsets.symmetric(vertical: 16),
-                                alignment: Alignment.center,
-                                child: Text(
-                                  'Day',
-                                  style: TextStyle(
-                                    fontFamily: 'JetBrains Mono',
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 17,
-                                    letterSpacing: 1.1,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                  overflow: TextOverflow.ellipsis,
-                                  maxLines: 1,
-                                ),
-                              ),
-                              ...times.map((t) => Container(
-                                width: timeColWidth,
-                                padding: EdgeInsets.symmetric(vertical: 16, horizontal: 4),
-                                alignment: Alignment.center,
-                                margin: EdgeInsets.symmetric(horizontal: cellMargin / 2),
-                                child: Text(
-                                  t,
-                                  style: TextStyle(
-                                    fontFamily: 'JetBrains Mono',
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                  overflow: TextOverflow.ellipsis,
-                                  maxLines: 1,
-                                ),
-                              )),
+                              _headerCell('Day', width: dayColWidth),
+                              ...times.map((t) => _headerCell(t,
+                                  width: timeColWidth, margin: cellMargin)),
                             ],
                           ),
                         ),
+                        // Day rows
                         ...days.asMap().entries.map((entry) {
                           final i = entry.key;
-                          final bool isEven = i % 2 == 0;
                           return Container(
-                            decoration: BoxDecoration(
-                              color: isEven ? Colors.blueGrey[800] : Colors.blueGrey[700],
-                            ),
+                            color: i.isEven
+                                ? Colors.blueGrey[800]
+                                : Colors.blueGrey[700],
                             child: Row(
                               children: [
-                                Container(
-                                  width: dayColWidth,
-                                  height: 60,
-                                  alignment: Alignment.center,
-                                  child: Text(
-                                    days[i],
-                                    style: TextStyle(
-                                      fontFamily: 'JetBrains Mono',
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 16,
-                                      color: Colors.white,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                    overflow: TextOverflow.ellipsis,
-                                    maxLines: 1,
-                                  ),
-                                ),
+                                _dayLabelCell(days[i]),
                                 ...times.map((t) {
-                                  final cell = routine[t]![i];
+                                  final cells = routine[t];
+                                  final cell = (cells != null &&
+                                      i < cells.length)
+                                      ? cells[i]
+                                      : RoutineCellData();
                                   return GestureDetector(
                                     onTap: () => _showCellDialog(i, t),
                                     child: Container(
                                       width: timeColWidth,
                                       height: 60,
                                       alignment: Alignment.center,
-                                      margin: EdgeInsets.symmetric(horizontal: cellMargin / 2, vertical: 4),
+                                      margin: EdgeInsets.symmetric(
+                                        horizontal: cellMargin / 2,
+                                        vertical: 4,
+                                      ),
                                       decoration: BoxDecoration(
                                         color: Colors.blueGrey[900],
-                                        borderRadius: BorderRadius.circular(8),
-                                        border: Border.all(color: Colors.blueGrey[600]!),
+                                        borderRadius:
+                                        BorderRadius.circular(8),
+                                        border: Border.all(
+                                            color: Colors.blueGrey[600]!),
                                       ),
                                       child: RoutineCell(cell),
                                     ),
@@ -1137,42 +1468,85 @@ class _RoutinePageState extends State<RoutinePage> {
       ),
       floatingActionButton: Padding(
         padding: const EdgeInsets.only(bottom: 16.0, right: 8.0),
-        child: Align(
-          alignment: Alignment.bottomRight,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Button: Remove time slot (red minus FAB)
-              FloatingActionButton(
-                heroTag: 'remove',
-                onPressed: _showRemoveTimeDialog,
-                backgroundColor: Colors.red[700],
-                child: Icon(Icons.remove, color: Colors.white),
-              ),
-              SizedBox(width: 16),
-              // Button: Add time slot (blue plus FAB)
-              FloatingActionButton(
-                heroTag: 'add',
-                onPressed: _showAddOptions,
-                backgroundColor: Colors.blue[900],
-                child: Icon(Icons.add, color: Colors.white),
-              ),
-              SizedBox(width: 16),
-              // Button: Save options (green down arrow FAB)
-              FloatingActionButton(
-                key: _saveFabKey,
-                heroTag: 'save',
-                onPressed: _showSaveOptions,
-                backgroundColor: Colors.green[700],
-                child: Icon(Icons.arrow_downward, color: Colors.white),
-              ),
-            ],
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FloatingActionButton(
+              key: _removeFabKey,
+              heroTag: 'remove',
+              onPressed: _showRemoveOptions,
+              backgroundColor: Colors.red[700],
+              child: const Icon(Icons.remove, color: Colors.white),
+            ),
+            const SizedBox(width: 16),
+            FloatingActionButton(
+              key: _addFabKey,
+              heroTag: 'add',
+              onPressed: _showAddOptions,
+              backgroundColor: Colors.blue[900],
+              child: const Icon(Icons.add, color: Colors.white),
+            ),
+            const SizedBox(width: 16),
+            FloatingActionButton(
+              key: _saveFabKey,
+              heroTag: 'save',
+              onPressed: _showSaveOptions,
+              backgroundColor: Colors.green[700],
+              child: const Icon(Icons.arrow_downward, color: Colors.white),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _headerCell(String text,
+      {required double width, double margin = 0}) {
+    return Container(
+      width: width,
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
+      alignment: Alignment.center,
+      margin: EdgeInsets.symmetric(horizontal: margin / 2),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontFamily: 'JetBrains Mono',
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
+          fontSize: 16,
+        ),
+        textAlign: TextAlign.center,
+        overflow: TextOverflow.ellipsis,
+        maxLines: 1,
+      ),
+    );
+  }
+
+  Widget _dayLabelCell(String day) {
+    return SizedBox(
+      width: dayColWidth,
+      height: 60,
+      child: Center(
+        child: Text(
+          day,
+          style: const TextStyle(
+            fontFamily: 'JetBrains Mono',
+            fontWeight: FontWeight.w600,
+            fontSize: 16,
+            color: Colors.white,
           ),
+          textAlign: TextAlign.center,
+          overflow: TextOverflow.ellipsis,
+          maxLines: 1,
         ),
       ),
     );
   }
 }
+
+// =============================================================================
+// Data models
+// =============================================================================
 
 class RoutineCellData {
   final String course;
@@ -1186,21 +1560,18 @@ class RoutineCellData {
   }) : friends = friends ?? [];
 
   bool get isEmpty =>
-      course.trim().isEmpty &&
-          room.trim().isEmpty &&
-          friends.isEmpty;
+      course.trim().isEmpty && room.trim().isEmpty && friends.isEmpty;
 
   RoutineCellData copyWith({
     String? course,
     String? room,
     List<FriendData>? friends,
-  }) {
-    return RoutineCellData(
-      course: course ?? this.course,
-      room: room ?? this.room,
-      friends: friends ?? List<FriendData>.from(this.friends),
-    );
-  }
+  }) =>
+      RoutineCellData(
+        course: course ?? this.course,
+        room: room ?? this.room,
+        friends: friends ?? List<FriendData>.from(this.friends),
+      );
 
   Map<String, dynamic> toJson() => {
     'course': course,
@@ -1210,8 +1581,8 @@ class RoutineCellData {
 
   factory RoutineCellData.fromJson(Map<String, dynamic> json) =>
       RoutineCellData(
-        course: json['course'] ?? '',
-        room: json['room'] ?? '',
+        course: json['course'] as String? ?? '',
+        room: json['room'] as String? ?? '',
         friends: (json['friends'] as List<dynamic>? ?? [])
             .map((f) => FriendData.fromJson(f as Map<String, dynamic>))
             .toList(),
@@ -1223,28 +1594,27 @@ class FriendData {
   final String course;
   final String room;
 
-  FriendData({
-    this.name = '',
-    this.course = '',
-    this.room = '',
-  });
+  const FriendData({this.name = '', this.course = '', this.room = ''});
 
-  Map<String, dynamic> toJson() => {
-    'name': name,
-    'course': course,
-    'room': room,
-  };
+  Map<String, dynamic> toJson() =>
+      {'name': name, 'course': course, 'room': room};
 
   factory FriendData.fromJson(Map<String, dynamic> json) => FriendData(
-    name: json['name'] ?? '',
-    course: json['course'] ?? '',
-    room: json['room'] ?? '',
+    name: json['name'] as String? ?? '',
+    course: json['course'] as String? ?? '',
+    room: json['room'] as String? ?? '',
   );
 }
+
+// =============================================================================
+// Routine cell widget
+// =============================================================================
 
 class RoutineCell extends StatelessWidget {
   final RoutineCellData data;
   const RoutineCell(this.data, {super.key});
+
+  static const _monoStyle = TextStyle(fontFamily: 'JetBrains Mono');
 
   @override
   Widget build(BuildContext context) {
@@ -1254,12 +1624,10 @@ class RoutineCell extends StatelessWidget {
         children: [
           Text(
             data.course,
-            style: TextStyle(
-              fontFamily: 'JetBrains Mono',
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 15,
-            ),
+            style: _monoStyle.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 15),
             textAlign: TextAlign.center,
             overflow: TextOverflow.ellipsis,
             maxLines: 1,
@@ -1267,11 +1635,8 @@ class RoutineCell extends StatelessWidget {
           if (data.room.trim().isNotEmpty)
             Text(
               data.room,
-              style: TextStyle(
-                fontFamily: 'JetBrains Mono',
-                color: Colors.white70,
-                fontSize: 13,
-              ),
+              style:
+              _monoStyle.copyWith(color: Colors.white70, fontSize: 13),
               textAlign: TextAlign.center,
               overflow: TextOverflow.ellipsis,
               maxLines: 1,
@@ -1279,11 +1644,8 @@ class RoutineCell extends StatelessWidget {
           if (data.friends.isNotEmpty)
             Text(
               '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
-              style: TextStyle(
-                fontFamily: 'JetBrains Mono',
-                color: Colors.lightBlueAccent,
-                fontSize: 13,
-              ),
+              style: _monoStyle.copyWith(
+                  color: Colors.lightBlueAccent, fontSize: 13),
               textAlign: TextAlign.center,
               overflow: TextOverflow.ellipsis,
               maxLines: 1,
@@ -1293,23 +1655,22 @@ class RoutineCell extends StatelessWidget {
     } else if (data.friends.isNotEmpty) {
       return Text(
         '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
-        style: TextStyle(
-          fontFamily: 'JetBrains Mono',
-          color: Colors.lightBlueAccent,
-          fontSize: 15,
-        ),
+        style:
+        _monoStyle.copyWith(color: Colors.lightBlueAccent, fontSize: 15),
         textAlign: TextAlign.center,
       );
     } else {
       return Text(
-        '-',
-        style: TextStyle(
-          fontFamily: 'JetBrains Mono',
-          color: Colors.white70,
-          fontSize: 15,
-        ),
+        '–',
+        style: _monoStyle.copyWith(color: Colors.white70, fontSize: 15),
         textAlign: TextAlign.center,
       );
     }
   }
+}
+
+class _PendingSlot {
+  final String time;
+  final String room;
+  const _PendingSlot(this.time, this.room);
 }
