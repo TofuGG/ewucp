@@ -13,7 +13,6 @@ dependencies:
   cupertino_icons: ^1.0.8
   shared_preferences: ^2.2.2
   pdf: ^3.11.3
-  printing: ^5.11.0
   flutter_native_splash: ^2.4.2
   file_picker: ^10.3.1
   permission_handler: ^11.3.0

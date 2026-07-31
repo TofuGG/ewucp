@@ -6,10 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
 import 'package:flutter/foundation.dart';
+import 'calendar_view.dart';
 
 // ======= Global routine data =======
 Map<String, List<RoutineCellData>> routine = {};
@@ -35,11 +36,44 @@ const Map<String, String> kDayMap = {
 };
 // ===================================
 
+// ======= Shared UI palette (base theme only) =======
+// A deep-navy "planner" palette with a warm highlighter-gold accent.
+// Note: the +/- / download FloatingActionButtons and the menus/dialogs
+// they open keep their original colors and are untouched by this palette.
+const Color kBgTop = Color(0xFF16213A);
+const Color kBgBottom = Color(0xFF0A0F1C);
+const Color kHeaderTop = Color(0xFF1C2C4E);
+const Color kHeaderBottom = Color(0xFF10182C);
+const Color kRowEven = Color(0xFF121B30);
+const Color kRowOdd = Color(0xFF0D1424);
+const Color kCellBg = Color(0xFF19233C);
+const Color kCellBorder = Color(0xFF2C3A5C);
+const Color kAccent = Color(0xFFA9E6F5);   // splash screen's light-blue circle
+const Color kAccentBlue = Color(0xFFF4E04D);   // splash screen's yellow circle
+const Color kTextMuted = Color(0xFFAEB8CE);
+// ===================================================
+
+// ======= Shared calendar layout constants =======
+// Used by both the RoutinePage state (logic) and the WeeklyCalendarGrid
+// (pure UI, see calendar_view.dart) so both stay in sync.
+const double kDayColWidth = 120;
+const double kTimeColWidth = 150;
+const double kCellMargin = 4;
+// ==================================================
+
 void main() {
   runApp(MaterialApp(
-    home: const RoutinePage(),
+    home: const StartupScreen(),
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.dark,
+      scaffoldBackgroundColor: kBgBottom,
+      fontFamily: 'JetBrains Mono',
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: kAccent,
+        brightness: Brightness.dark,
+      ).copyWith(surface: kCellBg),
       dropdownMenuTheme: DropdownMenuThemeData(
         menuStyle: MenuStyle(
           shape: WidgetStateProperty.all(
@@ -50,6 +84,89 @@ void main() {
     ),
   ));
 }
+
+// ======= Startup / splash screen =======
+class StartupScreen extends StatefulWidget {
+  const StartupScreen({super.key});
+
+  @override
+  State<StartupScreen> createState() => _StartupScreenState();
+}
+
+class _StartupScreenState extends State<StartupScreen> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 1600), () {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const RoutinePage()),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBgBottom,
+      body: Stack(
+        children: [
+          // Pastel circle bleeding off the top-left corner
+          Positioned(
+            top: -70,
+            left: -60,
+            child: Container(
+              width: 220,
+              height: 220,
+              decoration: const BoxDecoration(
+                color: Color(0xFFA9E6F5),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+          // Pastel circle bleeding off the bottom-right corner
+          Positioned(
+            bottom: -80,
+            right: -70,
+            child: Container(
+              width: 240,
+              height: 240,
+              decoration: const BoxDecoration(
+                color: Color(0xFFF4E04D),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+          // Centered logo + app name
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.history_toggle_off,
+                  color: Colors.white,
+                  size: 56,
+                ),
+                const SizedBox(height: 18),
+                const Text(
+                  'Tofu Routine',
+                  style: TextStyle(
+                    fontFamily: 'JetBrains Mono',
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 26,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+// ========================================
 
 class RoutinePage extends StatefulWidget {
   const RoutinePage({super.key});
@@ -75,10 +192,6 @@ class _RoutinePageState extends State<RoutinePage> {
     '4:50pm-7:50pm',
     'Custom',
   ];
-
-  static const double dayColWidth = 120;
-  static const double timeColWidth = 150;
-  static const double cellMargin = 4;
 
   @override
   void initState() {
@@ -579,7 +692,11 @@ class _RoutinePageState extends State<RoutinePage> {
         return;
       }
       final pngBytes = byteData.buffer.asUint8List();
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await _getDownloadsDir();
+      if (dir == null) {
+        _showSnackBar('Could not access Downloads folder.');
+        return;
+      }
       final filePath =
           '${dir.path}/routine_${DateTime.now().millisecondsSinceEpoch}.png';
       await File(filePath).writeAsBytes(pngBytes);
@@ -628,10 +745,17 @@ class _RoutinePageState extends State<RoutinePage> {
         },
       ),
     );
-    await Printing.sharePdf(
-      bytes: await pdfDoc.save(),
-      filename: 'routine_${DateTime.now().millisecondsSinceEpoch}.pdf',
-    );
+    final bytes = await pdfDoc.save();
+    final dir = await _getDownloadsDir();
+    if (dir == null) {
+      _showSnackBar('Could not access Downloads folder.');
+      return;
+    }
+    final filePath =
+        '${dir.path}/routine_${DateTime.now().millisecondsSinceEpoch}.pdf';
+    await File(filePath).writeAsBytes(bytes);
+    if (!mounted) return;
+    _showSnackBar('Routine saved to Downloads: $filePath');
   }
 
   pw.Widget _pdfCell(String text, {bool bold = false}) {
@@ -813,28 +937,55 @@ class _RoutinePageState extends State<RoutinePage> {
     }
   }
 
+  // Estimates the rendered width of a popup menu from its item labels, so
+  // the menu can be centered on its FAB instead of assuming a fixed width.
+  double _estimateMenuWidth(List<String> labels) {
+    double maxTextWidth = 0;
+    for (final label in labels) {
+      final painter = TextPainter(
+        text: TextSpan(text: label, style: const TextStyle(fontSize: 14)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      if (painter.width > maxTextWidth) maxTextWidth = painter.width;
+    }
+    // icon (24) + icon/text gap (8) + item's own horizontal padding (12*2)
+    // + a small buffer so the text never touches the pill's edge.
+    return maxTextWidth + 24 + 8 + 24 + 10;
+  }
+
   void _showRemoveOptions() async {
     final fabBox =
     _removeFabKey.currentContext!.findRenderObject() as RenderBox;
     final fabOffset = fabBox.localToGlobal(Offset.zero);
     final fabSize = fabBox.size;
+    final screenSize = MediaQuery.of(context).size;
+    const double menuHeight = 208; // 4 items (48px/item + 16px menu padding)
+    const double gap = 12;
+    const double menuWidthStep = 56; // Material menu widths snap to this step
+    final menuWidth = (_estimateMenuWidth(['Manual', 'Advising Slip', 'Friend Slip']) / menuWidthStep).ceil() * menuWidthStep;
+    final buttonCenterX = fabOffset.dx + fabSize.width / 2;
 
     final selected = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
-        fabOffset.dx + (fabSize.width - 170) / 2,
-        fabOffset.dy - 130,
-        fabOffset.dx + fabSize.width,
-        fabOffset.dy,
+        buttonCenterX - menuWidth / 2,
+        fabOffset.dy - menuHeight - gap,
+        screenSize.width - (buttonCenterX + menuWidth / 2),
+        screenSize.height - fabOffset.dy + gap,
       ),
+      constraints: BoxConstraints.tightFor(width: menuWidth),
       elevation: 8,
       color: Colors.blueGrey[900],
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       items: [
-        _buildPopupItem('time', Icons.schedule, 'Time Slot', Colors.red),
-        _buildPopupItem('day', Icons.calendar_view_day, 'Day', Colors.orange),
-        _buildPopupItem('course', Icons.book, 'Course', Colors.purple),
-        _buildPopupItem('all', Icons.delete_forever, 'All', Colors.grey),
+        _buildPopupItem('time', Icons.schedule, 'Time Slot', Colors.red,
+            width: menuWidth),
+        _buildPopupItem('day', Icons.calendar_view_day, 'Day', Colors.orange,
+            width: menuWidth),
+        _buildPopupItem('course', Icons.book, 'Course', Colors.purple,
+            width: menuWidth),
+        _buildPopupItem('all', Icons.delete_forever, 'All', Colors.grey,
+            width: menuWidth),
       ],
     );
     if (!mounted) return;
@@ -1249,14 +1400,19 @@ class _RoutinePageState extends State<RoutinePage> {
     _saveFabKey.currentContext!.findRenderObject() as RenderBox;
     final fabOffset = fabBox.localToGlobal(Offset.zero);
     final fabSize = fabBox.size;
+    final screenSize = MediaQuery.of(context).size;
+    const double menuHeight = 112; // 2 items (48px/item + 16px menu padding)
+    const double gap = 12;
+    final menuWidth = _estimateMenuWidth(['Save as PNG', 'Save as PDF']);
+    final buttonCenterX = fabOffset.dx + fabSize.width / 2;
 
     final selected = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
-        fabOffset.dx + (fabSize.width - 170) / 2,
-        fabOffset.dy - 130,
-        fabOffset.dx + fabSize.width,
-        fabOffset.dy,
+        buttonCenterX - menuWidth / 2,
+        fabOffset.dy - menuHeight - gap,
+        screenSize.width - (buttonCenterX + menuWidth / 2),
+        screenSize.height - fabOffset.dy + gap,
       ),
       elevation: 8,
       color: Colors.blueGrey[900],
@@ -1277,14 +1433,19 @@ class _RoutinePageState extends State<RoutinePage> {
     _addFabKey.currentContext!.findRenderObject() as RenderBox;
     final fabOffset = fabBox.localToGlobal(Offset.zero);
     final fabSize = fabBox.size;
+    final screenSize = MediaQuery.of(context).size;
+    const double menuHeight = 160; // 3 items (48px/item + 16px menu padding)
+    const double gap = 12;
+    final menuWidth = _estimateMenuWidth(['Manual', 'Advising Slip', 'Friend Slip']);
+    final buttonCenterX = fabOffset.dx + fabSize.width / 2;
 
     final selected = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
-        fabOffset.dx + (fabSize.width - 170) / 2,
-        fabOffset.dy - 130,
-        fabOffset.dx + fabSize.width,
-        fabOffset.dy,
+        buttonCenterX - menuWidth / 2,
+        fabOffset.dy - menuHeight - gap,
+        screenSize.width - (buttonCenterX + menuWidth / 2),
+        screenSize.height - fabOffset.dy + gap,
       ),
       elevation: 8,
       color: Colors.blueGrey[900],
@@ -1308,7 +1469,9 @@ class _RoutinePageState extends State<RoutinePage> {
       IconData icon,
       String label,
       MaterialColor color,
-      ) {
+      {
+      double? width,
+      }) {
     return PopupMenuItem(
       value: value,
       padding: EdgeInsets.zero,
@@ -1321,6 +1484,7 @@ class _RoutinePageState extends State<RoutinePage> {
           highlightColor: color[300],
           onTap: () => Navigator.pop(context, value),
           child: Container(
+            width: width,
             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
             child: Row(
               children: [
@@ -1356,115 +1520,32 @@ class _RoutinePageState extends State<RoutinePage> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<Directory?> _getDownloadsDir() async {
+    if (!Platform.isAndroid) return getDownloadsDirectory();
+    var status = await Permission.manageExternalStorage.status;
+    if (!status.isGranted) {
+      status = await Permission.manageExternalStorage.request();
+    }
+    if (!status.isGranted) return null;
+    final dir = Directory('/storage/emulated/0/Download');
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return dir;
+  }
+
   // ---------------------------------------------------------------------------
   // Build
   // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
-    final double totalTimeColWidth =
-        times.length * (timeColWidth + cellMargin);
-    final double tableWidth = dayColWidth + totalTimeColWidth;
-
     return Scaffold(
-      backgroundColor: Colors.blueGrey[900],
-      appBar: AppBar(
-        title: Text(
-          'Tofu Routine',
-          style: TextStyle(
-            fontFamily: 'JetBrains Mono',
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 22,
-            letterSpacing: 1.2,
-            shadows: [
-              Shadow(
-                offset: const Offset(1, 2),
-                blurRadius: 6,
-                color: Colors.black.withAlpha(102),
-              ),
-            ],
-          ),
-        ),
-        backgroundColor: Colors.blue[900],
-        elevation: 4,
-        centerTitle: true,
-      ),
-      body: Container(
-        color: Colors.grey[850],
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final double minWidth = constraints.maxWidth;
-            return SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SizedBox(
-                width: tableWidth > minWidth ? tableWidth : minWidth,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.vertical,
-                  child: RepaintBoundary(
-                    key: _routineKey,
-                    child: Column(
-                      children: [
-                        // Header row
-                        Container(
-                          color: Colors.blue[900],
-                          child: Row(
-                            children: [
-                              _headerCell('Day', width: dayColWidth),
-                              ...times.map((t) => _headerCell(t,
-                                  width: timeColWidth, margin: cellMargin)),
-                            ],
-                          ),
-                        ),
-                        // Day rows
-                        ...days.asMap().entries.map((entry) {
-                          final i = entry.key;
-                          return Container(
-                            color: i.isEven
-                                ? Colors.blueGrey[800]
-                                : Colors.blueGrey[700],
-                            child: Row(
-                              children: [
-                                _dayLabelCell(days[i]),
-                                ...times.map((t) {
-                                  final cells = routine[t];
-                                  final cell = (cells != null &&
-                                      i < cells.length)
-                                      ? cells[i]
-                                      : RoutineCellData();
-                                  return GestureDetector(
-                                    onTap: () => _showCellDialog(i, t),
-                                    child: Container(
-                                      width: timeColWidth,
-                                      height: 60,
-                                      alignment: Alignment.center,
-                                      margin: EdgeInsets.symmetric(
-                                        horizontal: cellMargin / 2,
-                                        vertical: 4,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: Colors.blueGrey[900],
-                                        borderRadius:
-                                        BorderRadius.circular(8),
-                                        border: Border.all(
-                                            color: Colors.blueGrey[600]!),
-                                      ),
-                                      child: RoutineCell(cell),
-                                    ),
-                                  );
-                                }),
-                              ],
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
+      backgroundColor: kBgBottom,
+      appBar: const CalendarHeaderBar(),
+      body: WeeklyCalendarGrid(
+        routineKey: _routineKey,
+        onCellTap: _showCellDialog,
       ),
       floatingActionButton: Padding(
         padding: const EdgeInsets.only(bottom: 16.0, right: 8.0),
@@ -1495,49 +1576,6 @@ class _RoutinePageState extends State<RoutinePage> {
               child: const Icon(Icons.arrow_downward, color: Colors.white),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _headerCell(String text,
-      {required double width, double margin = 0}) {
-    return Container(
-      width: width,
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
-      alignment: Alignment.center,
-      margin: EdgeInsets.symmetric(horizontal: margin / 2),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontFamily: 'JetBrains Mono',
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-          fontSize: 16,
-        ),
-        textAlign: TextAlign.center,
-        overflow: TextOverflow.ellipsis,
-        maxLines: 1,
-      ),
-    );
-  }
-
-  Widget _dayLabelCell(String day) {
-    return SizedBox(
-      width: dayColWidth,
-      height: 60,
-      child: Center(
-        child: Text(
-          day,
-          style: const TextStyle(
-            fontFamily: 'JetBrains Mono',
-            fontWeight: FontWeight.w600,
-            fontSize: 16,
-            color: Colors.white,
-          ),
-          textAlign: TextAlign.center,
-          overflow: TextOverflow.ellipsis,
-          maxLines: 1,
         ),
       ),
     );
@@ -1607,67 +1645,11 @@ class FriendData {
 }
 
 // =============================================================================
-// Routine cell widget
+// Routine cell presentation widget
 // =============================================================================
-
-class RoutineCell extends StatelessWidget {
-  final RoutineCellData data;
-  const RoutineCell(this.data, {super.key});
-
-  static const _monoStyle = TextStyle(fontFamily: 'JetBrains Mono');
-
-  @override
-  Widget build(BuildContext context) {
-    if (data.course.trim().isNotEmpty) {
-      return Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            data.course,
-            style: _monoStyle.copyWith(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 15),
-            textAlign: TextAlign.center,
-            overflow: TextOverflow.ellipsis,
-            maxLines: 1,
-          ),
-          if (data.room.trim().isNotEmpty)
-            Text(
-              data.room,
-              style:
-              _monoStyle.copyWith(color: Colors.white70, fontSize: 13),
-              textAlign: TextAlign.center,
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-            ),
-          if (data.friends.isNotEmpty)
-            Text(
-              '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
-              style: _monoStyle.copyWith(
-                  color: Colors.lightBlueAccent, fontSize: 13),
-              textAlign: TextAlign.center,
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-            ),
-        ],
-      );
-    } else if (data.friends.isNotEmpty) {
-      return Text(
-        '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
-        style:
-        _monoStyle.copyWith(color: Colors.lightBlueAccent, fontSize: 15),
-        textAlign: TextAlign.center,
-      );
-    } else {
-      return Text(
-        '–',
-        style: _monoStyle.copyWith(color: Colors.white70, fontSize: 15),
-        textAlign: TextAlign.center,
-      );
-    }
-  }
-}
+// Note: RoutineCell now lives in calendar_view.dart alongside the rest of
+// the calendar's UI layer.
+// =============================================================================
 
 class _PendingSlot {
   final String time;

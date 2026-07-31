@@ -9,6 +9,9 @@ permissions:
 
 jobs:
   release:
+    # Only build/sign the release APK when the pushed commit message
+    # starts with "Release" (e.g. "Release 1.2"). Other pushes skip this job.
+    if: startsWith(github.event.head_commit.message, 'Release')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
