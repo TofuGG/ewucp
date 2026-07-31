@@ -1,6 +1,45 @@
 import 'package:flutter/material.dart';
 import 'main.dart';
 
+// Palette assigned to courses. Kept distinct/high-contrast against the dark
+// navy background; colors are stable per course name so the same course is
+// always the same color across the whole grid.
+const List<Color> _coursePalette = [
+  kAccent,          // light blue
+  kAccentBlue,      // gold
+  Color(0xFF9EDB8E), // green
+  Color(0xFFC7A6F5), // purple
+  Color(0xFFFFAE7A), // orange
+  Color(0xFF8ED4C8), // teal
+];
+
+// Reduces a course label to its base code so a lecture and its lab share a
+// color: "PHY109 (4)", "PHY109 Lab" and "PHY109-01" all key to "PHY109".
+String _courseKey(String course) {
+  final t = course.trim();
+  if (t.isEmpty) return '';
+  final code = RegExp(r'^[A-Za-z]+\s*\d+').firstMatch(t);
+  if (code != null) return code.group(0)!.replaceAll(RegExp(r'\s+'), '');
+  return t.split(RegExp(r'\s+')).first;
+}
+
+// Maps every distinct course code in the routine to a palette color, sorted
+// alphabetically so the assignment is deterministic across rebuilds.
+Map<String, Color> _courseColors() {
+  final names = <String>{};
+  for (final cells in routine.values) {
+    for (final c in cells) {
+      final n = _courseKey(c.course);
+      if (n.isNotEmpty) names.add(n);
+    }
+  }
+  final sorted = names.toList()..sort();
+  return {
+    for (var i = 0; i < sorted.length; i++)
+      sorted[i]: _coursePalette[i % _coursePalette.length],
+  };
+}
+
 // =============================================================================
 // Calendar UI layer
 //
@@ -111,6 +150,7 @@ class WeeklyCalendarGrid extends StatelessWidget {
     final double totalTimeColWidth =
         times.length * (kTimeColWidth + kCellMargin);
     final double tableWidth = kDayColWidth + totalTimeColWidth;
+    final Map<String, Color> courseColors = _courseColors();
 
     return Container(
       decoration: const BoxDecoration(
@@ -135,15 +175,13 @@ class WeeklyCalendarGrid extends StatelessWidget {
                     padding: const EdgeInsets.fromLTRB(10, 12, 10, 24),
                     child: Column(
                       children: [
-                        const _CalendarColumnHeader(),
+                        _CalendarColumnHeader(),
                         const SizedBox(height: 10),
                         ...days.asMap().entries.map((entry) {
-                          final i = entry.key;
-                          final accent = i.isEven ? kAccent : kAccentBlue;
                           return _CalendarDayRow(
-                            dayIndex: i,
-                            dayName: days[i],
-                            accent: accent,
+                            dayIndex: entry.key,
+                            dayName: days[entry.key],
+                            courseColors: courseColors,
                             onCellTap: onCellTap,
                           );
                         }),
@@ -236,13 +274,13 @@ class _CalendarColumnHeader extends StatelessWidget {
 class _CalendarDayRow extends StatelessWidget {
   final int dayIndex;
   final String dayName;
-  final Color accent;
+  final Map<String, Color> courseColors;
   final void Function(int dayIndex, String time) onCellTap;
 
   const _CalendarDayRow({
     required this.dayIndex,
     required this.dayName,
-    required this.accent,
+    required this.courseColors,
     required this.onCellTap,
   });
 
@@ -261,21 +299,16 @@ class _CalendarDayRow extends StatelessWidget {
           SizedBox(
             width: kDayColWidth,
             child: Center(
-              child: Container(
+              child: Padding(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: accent.withAlpha(30),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: accent.withAlpha(90)),
-                ),
                 child: Text(
                   dayName,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontFamily: 'JetBrains Mono',
                     fontWeight: FontWeight.w700,
                     fontSize: 14,
-                    color: accent,
+                    color: Colors.white,
                   ),
                   textAlign: TextAlign.center,
                   overflow: TextOverflow.ellipsis,
@@ -292,7 +325,7 @@ class _CalendarDayRow extends StatelessWidget {
             return Expanded(
               child: _CalendarCell(
                 cell: cell,
-                accent: accent,
+                accent: courseColors[_courseKey(cell.course)] ?? kAccent,
                 onTap: () => onCellTap(dayIndex, t),
               ),
             );

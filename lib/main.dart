@@ -844,7 +844,7 @@ class _RoutinePageState extends State<RoutinePage> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context),
-                style: TextButton.styleFrom(foregroundColor: Colors.black),
+                style: TextButton.styleFrom(foregroundColor: kAccent),
                 child: const Text('Cancel'),
               ),
               ElevatedButton(
@@ -858,7 +858,7 @@ class _RoutinePageState extends State<RoutinePage> {
                   Navigator.pop(context, '$timeToAdd|$insertIndex');
                 },
                 style: ElevatedButton.styleFrom(
-                  foregroundColor: Colors.black,
+                  foregroundColor: kAccent,
                   backgroundColor: Colors.blue,
                 ),
                 child: const Text('Add'),
@@ -909,7 +909,7 @@ class _RoutinePageState extends State<RoutinePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              style: TextButton.styleFrom(foregroundColor: kAccent),
               child: const Text('Cancel'),
             ),
             ElevatedButton(
@@ -920,7 +920,7 @@ class _RoutinePageState extends State<RoutinePage> {
                 Navigator.pop(context);
               },
               style: ElevatedButton.styleFrom(
-                foregroundColor: Colors.black,
+                foregroundColor: kAccent,
                 backgroundColor: Colors.red,
               ),
               child: const Text('Remove'),
@@ -1021,7 +1021,7 @@ class _RoutinePageState extends State<RoutinePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              style: TextButton.styleFrom(foregroundColor: kAccent),
               child: const Text('Cancel'),
             ),
             ElevatedButton(
@@ -1039,7 +1039,7 @@ class _RoutinePageState extends State<RoutinePage> {
                 Navigator.pop(context);
               },
               style: ElevatedButton.styleFrom(
-                foregroundColor: Colors.black,
+                foregroundColor: kAccent,
                 backgroundColor: Colors.red,
               ),
               child: const Text('Remove'),
@@ -1091,7 +1091,7 @@ class _RoutinePageState extends State<RoutinePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(foregroundColor: Colors.black),
+              style: TextButton.styleFrom(foregroundColor: kAccent),
               child: const Text('Cancel'),
             ),
             ElevatedButton(
@@ -1109,7 +1109,7 @@ class _RoutinePageState extends State<RoutinePage> {
                 Navigator.pop(context);
               },
               style: ElevatedButton.styleFrom(
-                foregroundColor: Colors.black,
+                foregroundColor: kAccent,
                 backgroundColor: Colors.red,
               ),
               child: const Text('Remove'),
@@ -1135,13 +1135,13 @@ class _RoutinePageState extends State<RoutinePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(
-              foregroundColor: Colors.black,
+              foregroundColor: kAccent,
               backgroundColor: Colors.red,
             ),
             child: const Text('Clear All'),
@@ -1181,7 +1181,7 @@ class _RoutinePageState extends State<RoutinePage> {
                     Navigator.pop(context);
                     await _showAddClassDialog(dayIdx, time);
                   },
-                  style: TextButton.styleFrom(foregroundColor: Colors.black),
+                  style: TextButton.styleFrom(foregroundColor: kAccent),
                   child: const Text('Add Class'),
                 ),
                 const SizedBox(width: 8),
@@ -1190,7 +1190,7 @@ class _RoutinePageState extends State<RoutinePage> {
                     Navigator.pop(context);
                     await _showAddFriendDialog(dayIdx, time);
                   },
-                  style: TextButton.styleFrom(foregroundColor: Colors.black),
+                  style: TextButton.styleFrom(foregroundColor: kAccent),
                   child: const Text('Add Friend'),
                 ),
               ],
@@ -1265,7 +1265,7 @@ class _RoutinePageState extends State<RoutinePage> {
                           await _showAddClassDialog(dayIdx, time);
                         },
                         style:
-                        TextButton.styleFrom(foregroundColor: Colors.black),
+                        TextButton.styleFrom(foregroundColor: kAccent),
                         child: const Text('Add Class'),
                       ),
                     const SizedBox(width: 8),
@@ -1275,7 +1275,7 @@ class _RoutinePageState extends State<RoutinePage> {
                         await _showAddFriendDialog(dayIdx, time);
                       },
                       style:
-                      TextButton.styleFrom(foregroundColor: Colors.black),
+                      TextButton.styleFrom(foregroundColor: kAccent),
                       child: const Text('Add Friend'),
                     ),
                   ],
@@ -1312,7 +1312,7 @@ class _RoutinePageState extends State<RoutinePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
@@ -1327,7 +1327,7 @@ class _RoutinePageState extends State<RoutinePage> {
               }
               if (context.mounted) Navigator.pop(context);
             },
-            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Save'),
           ),
         ],
@@ -1365,7 +1365,7 @@ class _RoutinePageState extends State<RoutinePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
@@ -1383,7 +1383,7 @@ class _RoutinePageState extends State<RoutinePage> {
               }
               if (context.mounted) Navigator.pop(context);
             },
-            style: TextButton.styleFrom(foregroundColor: Colors.black),
+            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Save'),
           ),
         ],
