@@ -24,7 +24,7 @@ const List<String> kAllDays = [
   'Friday',
   'Saturday',
 ];
-List<String> days = [...kAllDays];
+List<String> days = [];
 
 // Shared day abbreviation map used for EWU advising slip parsing
 const Map<String, String> kDayMap = {
@@ -638,6 +638,7 @@ class _RoutinePageState extends State<RoutinePage> {
     final prefs = await SharedPreferences.getInstance();
     final timesStr = prefs.getString('routine_times');
     final routineStr = prefs.getString('routine_data');
+    final daysStr = prefs.getString('routine_days');
     if (!mounted) return;
     if (timesStr == null || routineStr == null) return;
 
@@ -655,9 +656,28 @@ class _RoutinePageState extends State<RoutinePage> {
             (value as List).map((cell) => RoutineCellData.fromJson(cell as Map<String, dynamic>)).toList();
       });
 
+      List<String> loadedDays;
+      if (daysStr != null) {
+        loadedDays = List<String>.from(json.decode(daysStr) as List);
+      } else {
+        // Legacy saves predate day persistence; reconstruct the columns from
+        // the saved routine row width, clamped to the known weekdays.
+        final first = loadedRoutine.values.isNotEmpty
+            ? loadedRoutine.values.first.length
+            : kAllDays.length;
+        final count = first.clamp(1, kAllDays.length);
+        loadedDays = kAllDays.take(count).toList();
+      }
+
+      // Same invariant as _saveRoutineData: no content, no days.
+      final hasContent = loadedRoutine.values
+          .any((cells) => cells.any((c) => !c.isEmpty));
+      if (!hasContent) loadedDays = [];
+
       setState(() {
         times = loadedTimes;
         routine = loadedRoutine;
+        days = loadedDays;
       });
     } catch (e) {
       debugPrint('_loadRoutineData error: $e');
@@ -665,6 +685,16 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   Future<void> _saveRoutineData() async {
+    // Invariant: the calendar only shows days while there is content to
+    // display. Clearing days here covers every removal path (Remove Course,
+    // cell deletes, Remove Time Slot, Remove Day, Remove All).
+    final hasContent =
+        routine.values.any((cells) => cells.any((c) => !c.isEmpty));
+    if (!hasContent && days.isNotEmpty) {
+      days = [];
+      if (mounted) setState(() {});
+    }
+
     final prefs = await SharedPreferences.getInstance();
     final timesStr = json.encode(times);
     final routineMap = routine.map(
@@ -675,6 +705,7 @@ class _RoutinePageState extends State<RoutinePage> {
     final compressedRoutineBase64 = base64Encode(compressedRoutine);
     await prefs.setString('routine_times', timesStr);
     await prefs.setString('routine_data', compressedRoutineBase64);
+    await prefs.setString('routine_days', json.encode(days));
   }
 
   // ---------------------------------------------------------------------------
@@ -1131,7 +1162,7 @@ class _RoutinePageState extends State<RoutinePage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Remove All'),
-        content: const Text('Clear all routine data, time slots, and reset days?'),
+        content: const Text('Clear all routine data, time slots, and days?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -1152,7 +1183,6 @@ class _RoutinePageState extends State<RoutinePage> {
     if (confirmed != true) return;
     routine.clear();
     times.clear();
-    days = [...kAllDays];
     setState(() {});
     await _saveRoutineData();
     _showSnackBar('All data cleared.');
