@@ -40,6 +40,13 @@ Map<String, Color> _courseColors() {
   };
 }
 
+// Public helper so the dialogs in main.dart can color a course card with the
+// same palette color that the grid uses for that course.
+Color courseColorFor(String course) {
+  final colors = _courseColors();
+  return colors[_courseKey(course)] ?? kAccent;
+}
+
 // =============================================================================
 // Calendar UI layer
 //
@@ -48,7 +55,47 @@ Map<String, Color> _courseColors() {
 // shared color palette from main.dart, but holds no business logic itself —
 // all data mutation, persistence, dialogs, and FAB behavior stay in
 // main.dart's _RoutinePageState untouched.
+//
+// Layout model: the calendar is designed to fit the whole grid on screen.
+// The day-label column grows from kDayColWidth up to kMaxDayColWidth using
+// leftover width; the time-slot columns and day-row heights split the
+// remaining space, clamped to comfortable minimums. Scrolling is only a
+// fallback when a phone is too small for even the minimum cell sizes.
 // =============================================================================
+
+const double _kHeaderHeight = 48;
+const double _kRowGap = 6;
+
+// Splits a stored time range into compact start/end labels for the narrow
+// header columns: "8:30am-10:00am" -> ["8:30", "10:00"].
+List<String> _timeParts(String t) {
+  String norm(String s) {
+    final trimmed = s.trim();
+    final m = RegExp(r'^(\d{1,2}:\d{2})[aApP][mM]$').firstMatch(trimmed);
+    return m != null ? m.group(1)! : trimmed;
+  }
+
+  final parts = t.split('-');
+  if (parts.length == 2) {
+    final a = norm(parts[0]);
+    final b = norm(parts[1]);
+    if (a.isNotEmpty && b.isNotEmpty && a != b) return [a, b];
+  }
+  return [t.trim()];
+}
+
+String _dayShortName(String name) {
+  const short = {
+    'Sunday': 'Sun',
+    'Monday': 'Mon',
+    'Tuesday': 'Tue',
+    'Wednesday': 'Wed',
+    'Thursday': 'Thu',
+    'Friday': 'Fri',
+    'Saturday': 'Sat',
+  };
+  return short[name] ?? (name.isEmpty ? name : name.substring(0, 3));
+}
 
 // ------------------------------------------------------------------------
 // App bar
@@ -138,20 +185,19 @@ class CalendarHeaderBar extends StatelessWidget
 class WeeklyCalendarGrid extends StatelessWidget {
   final GlobalKey routineKey;
   final void Function(int dayIndex, String time) onCellTap;
+  final VoidCallback? onImportSlip;
+  final VoidCallback? onAddSlot;
 
   const WeeklyCalendarGrid({
     super.key,
     required this.routineKey,
     required this.onCellTap,
+    this.onImportSlip,
+    this.onAddSlot,
   });
 
   @override
   Widget build(BuildContext context) {
-    final double totalTimeColWidth =
-        times.length * (kTimeColWidth + kCellMargin);
-    final double tableWidth = kDayColWidth + totalTimeColWidth;
-    final Map<String, Color> courseColors = _courseColors();
-
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
@@ -162,32 +208,87 @@ class WeeklyCalendarGrid extends StatelessWidget {
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final double minWidth = constraints.maxWidth;
+          if (days.isEmpty && times.isEmpty) {
+            return RepaintBoundary(
+              key: routineKey,
+              child: _EmptyState(
+                onImport: onImportSlip,
+                onAddSlot: onAddSlot,
+              ),
+            );
+          }
+
+          const double hPad = 12;
+          final double availW = constraints.maxWidth - hPad * 2;
+
+          // Day-label column gets ~15% of the leftover width (shrunk so time
+          // columns stay readable); time columns split the rest.
+          const double dayColShrink = 0.85;
+          final double dayColW = times.isEmpty
+              ? availW.clamp(kDayColWidth, kMaxDayColWidth)
+              : ((availW - times.length * kMinTimeColWidth) * dayColShrink)
+                  .clamp(kDayColWidth, kMaxDayColWidth);
+          double timeColW =
+              times.isEmpty ? 0 : (availW - dayColW) / times.length;
+          final bool needHScroll =
+              times.isNotEmpty && timeColW < kMinTimeColWidth;
+          if (needHScroll) timeColW = kMinTimeColWidth;
+          final double tableW = dayColW + times.length * timeColW;
+
+          // Row heights fill the body, clamped to a comfortable range. The
+          // bottom padding clears the floating FAB row.
+          const double vPadTop = 10;
+          const double vPadBottom = 88;
+          const double rowOuter = 8; // 3 top + 3 bottom padding + 2px border
+          final double gaps = days.isEmpty ? 0 : days.length * _kRowGap;
+          final double availH = constraints.maxHeight -
+              vPadTop -
+              vPadBottom -
+              _kHeaderHeight -
+              gaps -
+              days.length * rowOuter;
+          final double rowH = days.isEmpty
+              ? kMinRowHeight
+              : (availH / days.length).clamp(kMinRowHeight, kMaxRowHeight);
+          final double totalH = vPadTop +
+              _kHeaderHeight +
+              gaps +
+              days.length * (rowH + rowOuter) +
+              vPadBottom;
+          final bool needVScroll = totalH > constraints.maxHeight;
+
+          final Map<String, Color> courseColors = _courseColors();
+
+          final Widget grid = Padding(
+            padding:
+                const EdgeInsets.fromLTRB(hPad, vPadTop, hPad, vPadBottom),
+            child: Column(
+              children: [
+                _CalendarColumnHeader(dayColW: dayColW),
+                const SizedBox(height: _kRowGap),
+                ...days.asMap().entries.map((entry) => _CalendarDayRow(
+                      dayIndex: entry.key,
+                      dayName: days[entry.key],
+                      dayColW: dayColW,
+                      rowH: rowH,
+                      courseColors: courseColors,
+                      onCellTap: onCellTap,
+                    )),
+              ],
+            ),
+          );
+
           return SingleChildScrollView(
             scrollDirection: Axis.horizontal,
+            physics: needHScroll ? null : const NeverScrollableScrollPhysics(),
             child: SizedBox(
-              width: tableWidth > minWidth ? tableWidth : minWidth,
+              width: needHScroll ? tableW + hPad * 2 : constraints.maxWidth,
               child: SingleChildScrollView(
                 scrollDirection: Axis.vertical,
+                physics: needVScroll ? null : const NeverScrollableScrollPhysics(),
                 child: RepaintBoundary(
                   key: routineKey,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 12, 10, 24),
-                    child: Column(
-                      children: [
-                        _CalendarColumnHeader(),
-                        const SizedBox(height: 10),
-                        ...days.asMap().entries.map((entry) {
-                          return _CalendarDayRow(
-                            dayIndex: entry.key,
-                            dayName: days[entry.key],
-                            courseColors: courseColors,
-                            onCellTap: onCellTap,
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
+                  child: grid,
                 ),
               ),
             ),
@@ -198,75 +299,196 @@ class WeeklyCalendarGrid extends StatelessWidget {
   }
 }
 
-class _CalendarColumnHeader extends StatelessWidget {
-  const _CalendarColumnHeader();
+class _EmptyState extends StatelessWidget {
+  final VoidCallback? onImport;
+  final VoidCallback? onAddSlot;
+
+  const _EmptyState({this.onImport, this.onAddSlot});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [kHeaderTop, kHeaderBottom],
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-        ),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: kAccent.withAlpha(60)),
-      ),
-      child: Row(
-        children: [
-          SizedBox(
-            width: kDayColWidth,
-            child: Center(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.calendar_month_rounded,
-                      color: kAccent, size: 16),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Day',
-                    style: const TextStyle(
-                      fontFamily: 'JetBrains Mono',
-                      color: kAccent,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                      letterSpacing: 0.6,
-                    ),
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [kHeaderTop, kHeaderBottom],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                shape: BoxShape.circle,
+                border: Border.all(color: kAccent.withAlpha(80), width: 2),
+                boxShadow: [
+                  BoxShadow(
+                    color: kAccent.withAlpha(30),
+                    blurRadius: 18,
+                    offset: const Offset(0, 6),
                   ),
                 ],
               ),
+              child:
+                  const Icon(Icons.calendar_month_rounded, color: kAccent, size: 44),
             ),
-          ),
-          ...times.map((t) => Expanded(
-                child: Container(
-                  margin: EdgeInsets.symmetric(horizontal: kCellMargin / 2),
-                  padding:
-                      const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
-                  decoration: BoxDecoration(
-                    border: Border(
-                      left: BorderSide(color: Colors.white.withAlpha(18)),
-                    ),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    t,
-                    style: const TextStyle(
-                      fontFamily: 'JetBrains Mono',
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
-                      letterSpacing: 0.4,
-                    ),
-                    textAlign: TextAlign.center,
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 2,
+            const SizedBox(height: 22),
+            const Text(
+              'No classes yet',
+              style: TextStyle(
+                fontFamily: 'JetBrains Mono',
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
+                letterSpacing: 0.5,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Import your advising slip to auto-build\nyour weekly routine, or add time slots\nmanually.',
+              style: TextStyle(
+                fontFamily: 'JetBrains Mono',
+                color: kTextMuted,
+                fontSize: 12,
+                height: 1.6,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            if (onImport != null) ...[
+              const SizedBox(height: 26),
+              FilledButton.icon(
+                onPressed: onImport,
+                icon: const Icon(Icons.upload_file_rounded, size: 18),
+                label: const Text(
+                  'Import Advising Slip',
+                  style: TextStyle(
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
                   ),
                 ),
-              )),
-        ],
+              ),
+            ],
+            if (onAddSlot != null) ...[
+              const SizedBox(height: 8),
+              TextButton.icon(
+                onPressed: onAddSlot,
+                style: TextButton.styleFrom(foregroundColor: kAccentBlue),
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text(
+                  'Add Time Slot',
+                  style: TextStyle(
+                    fontFamily: 'JetBrains Mono',
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
+    );
+  }
+}
+
+class _CalendarColumnHeader extends StatelessWidget {
+  final double dayColW;
+
+  const _CalendarColumnHeader({required this.dayColW});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: _kHeaderHeight,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [kHeaderTop, kHeaderBottom],
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+          ),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kAccent.withAlpha(60)),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: dayColW,
+              child: Center(
+                child: Icon(Icons.schedule_rounded,
+                    color: kAccent.withAlpha(200), size: 16),
+              ),
+            ),
+            ...times.map((t) => Expanded(
+                  child: Center(child: _TimeLabel(t)),
+                )),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TimeLabel extends StatelessWidget {
+  final String time;
+
+  const _TimeLabel(this.time);
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = _timeParts(time);
+    if (parts.length == 1) {
+      return FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Text(
+          parts[0],
+          style: const TextStyle(
+            fontFamily: 'JetBrains Mono',
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 11,
+          ),
+          textAlign: TextAlign.center,
+          maxLines: 1,
+        ),
+      );
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            parts[0],
+            style: const TextStyle(
+              fontFamily: 'JetBrains Mono',
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+              height: 1.15,
+            ),
+            maxLines: 1,
+          ),
+        ),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            parts[1],
+            style: TextStyle(
+              fontFamily: 'JetBrains Mono',
+              color: kAccent.withAlpha(200),
+              fontSize: 10,
+              height: 1.15,
+            ),
+            maxLines: 1,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -274,12 +496,16 @@ class _CalendarColumnHeader extends StatelessWidget {
 class _CalendarDayRow extends StatelessWidget {
   final int dayIndex;
   final String dayName;
+  final double dayColW;
+  final double rowH;
   final Map<String, Color> courseColors;
   final void Function(int dayIndex, String time) onCellTap;
 
   const _CalendarDayRow({
     required this.dayIndex,
     required this.dayName,
+    required this.dayColW,
+    required this.rowH,
     required this.courseColors,
     required this.onCellTap,
   });
@@ -287,32 +513,33 @@ class _CalendarDayRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      margin: const EdgeInsets.only(bottom: _kRowGap),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       decoration: BoxDecoration(
         color: dayIndex.isEven ? kRowEven : kRowOdd,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: Colors.white.withAlpha(10)),
       ),
       child: Row(
         children: [
           SizedBox(
-            width: kDayColWidth,
+            width: dayColW,
             child: Center(
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                child: Text(
-                  dayName,
-                  style: const TextStyle(
-                    fontFamily: 'JetBrains Mono',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                    color: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    _dayShortName(dayName),
+                    style: TextStyle(
+                      fontFamily: 'JetBrains Mono',
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                      color: dayIndex.isEven ? Colors.white : kAccent,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
                   ),
-                  textAlign: TextAlign.center,
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
                 ),
               ),
             ),
@@ -325,6 +552,7 @@ class _CalendarDayRow extends StatelessWidget {
             return Expanded(
               child: _CalendarCell(
                 cell: cell,
+                height: rowH,
                 accent: courseColors[_courseKey(cell.course)] ?? kAccent,
                 onTap: () => onCellTap(dayIndex, t),
               ),
@@ -338,11 +566,13 @@ class _CalendarDayRow extends StatelessWidget {
 
 class _CalendarCell extends StatelessWidget {
   final RoutineCellData cell;
+  final double height;
   final Color accent;
   final VoidCallback onTap;
 
   const _CalendarCell({
     required this.cell,
+    required this.height,
     required this.accent,
     required this.onTap,
   });
@@ -352,8 +582,9 @@ class _CalendarCell extends StatelessWidget {
     final bool filled = !cell.isEmpty;
     return GestureDetector(
       onTap: onTap,
+      behavior: HitTestBehavior.opaque,
       child: SizedBox(
-        height: 64,
+        height: height,
         child: Stack(
           children: [
             if (!filled)
@@ -361,7 +592,7 @@ class _CalendarCell extends StatelessWidget {
                 child: Padding(
                   padding: EdgeInsets.symmetric(
                     horizontal: kCellMargin / 2,
-                    vertical: 4,
+                    vertical: 2,
                   ),
                   child:
                       CustomPaint(painter: _DashedBorderPainter(color: kCellBorder)),
@@ -370,15 +601,15 @@ class _CalendarCell extends StatelessWidget {
             Container(
               margin: EdgeInsets.symmetric(
                 horizontal: kCellMargin / 2,
-                vertical: 4,
+                vertical: 2,
               ),
               alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 2),
               decoration: BoxDecoration(
                 color: filled
                     ? Color.alphaBlend(accent.withAlpha(20), kCellBg)
                     : kCellBg.withAlpha(140),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(10),
                 border: filled
                     ? Border(left: BorderSide(color: accent, width: 3))
                     : null,
@@ -411,7 +642,7 @@ class _DashedBorderPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    const radius = 12.0;
+    const radius = 10.0;
     final rrect = RRect.fromRectAndRadius(
       Rect.fromLTWH(0, 0, size.width, size.height),
       const Radius.circular(radius),
@@ -445,6 +676,10 @@ class _DashedBorderPainter extends CustomPainter {
 
 // =============================================================================
 // Routine cell content (course / room / friends)
+//
+// Compact rendering: only the short course code, room number, and a gold
+// friend-count pill are shown so the whole grid fits on screen. Full details
+// (full course label, section, room) appear in the tap dialog in main.dart.
 // =============================================================================
 class RoutineCell extends StatelessWidget {
   final RoutineCellData data;
@@ -460,51 +695,66 @@ class RoutineCell extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            data.course,
-            style: _monoStyle.copyWith(
-                color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-            textAlign: TextAlign.center,
-            overflow: TextOverflow.ellipsis,
-            maxLines: 1,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              _courseKey(data.course),
+              style: _monoStyle.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 11,
+                height: 1.15,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
           if (data.room.trim().isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.place_outlined, size: 11, color: kTextMuted),
-                  const SizedBox(width: 3),
-                  Flexible(
-                    child: Text(
+              padding: const EdgeInsets.only(top: 1),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.place_outlined, size: 9, color: kTextMuted),
+                    const SizedBox(width: 2),
+                    Text(
                       data.room,
-                      style: _monoStyle.copyWith(color: kTextMuted, fontSize: 12),
-                      overflow: TextOverflow.ellipsis,
+                      style:
+                          _monoStyle.copyWith(color: kTextMuted, fontSize: 9),
                       maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           if (data.friends.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.only(top: 2),
               child: Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                    const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                 decoration: BoxDecoration(
                   color: kAccentBlue.withAlpha(30),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: Text(
-                  '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
-                  style: _monoStyle.copyWith(
-                      color: kAccentBlue,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.group_rounded,
+                        size: 9, color: kAccentBlue),
+                    const SizedBox(width: 3),
+                    Text(
+                      '${data.friends.length}',
+                      style: _monoStyle.copyWith(
+                          color: kAccentBlue,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w600),
+                      maxLines: 1,
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -512,20 +762,28 @@ class RoutineCell extends StatelessWidget {
       );
     } else if (data.friends.isNotEmpty) {
       return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
           color: kAccentBlue.withAlpha(30),
           borderRadius: BorderRadius.circular(20),
         ),
-        child: Text(
-          '${data.friends.length} friend${data.friends.length > 1 ? 's' : ''}',
-          style: _monoStyle.copyWith(
-              color: kAccentBlue, fontSize: 13, fontWeight: FontWeight.w600),
-          textAlign: TextAlign.center,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.group_rounded, size: 10, color: kAccentBlue),
+            const SizedBox(width: 3),
+            Text(
+              '${data.friends.length}',
+              style: _monoStyle.copyWith(
+                  color: kAccentBlue,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600),
+            ),
+          ],
         ),
       );
     } else {
-      return Icon(Icons.add_circle_outline, color: kCellBorder, size: 18);
+      return Icon(Icons.add_circle_outline, color: kCellBorder, size: 16);
     }
   }
 }

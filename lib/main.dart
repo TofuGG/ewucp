@@ -54,11 +54,17 @@ const Color kTextMuted = Color(0xFFAEB8CE);
 // ===================================================
 
 // ======= Shared calendar layout constants =======
+// The grid is sized adaptively so the whole calendar fits on screen: the
+// day-label column grows with leftover width while time-slot columns and
+// day-row heights split the remaining space, clamped to comfortable minimums.
 // Used by both the RoutinePage state (logic) and the WeeklyCalendarGrid
 // (pure UI, see calendar_view.dart) so both stay in sync.
-const double kDayColWidth = 120;
-const double kTimeColWidth = 150;
-const double kCellMargin = 4;
+const double kDayColWidth = 32; // min width of the day-label column
+const double kMaxDayColWidth = 56; // max width of the day-label column
+const double kMinTimeColWidth = 34; // min width of a time-slot column
+const double kMinRowHeight = 36; // min height of a day row
+const double kMaxRowHeight = 48; // max height of a day row
+const double kCellMargin = 2; // gutter between adjacent cells
 // ==================================================
 
 void main() {
@@ -73,11 +79,84 @@ void main() {
       colorScheme: ColorScheme.fromSeed(
         seedColor: kAccent,
         brightness: Brightness.dark,
-      ).copyWith(surface: kCellBg),
+      ).copyWith(surface: kCellBg, primary: kAccent, secondary: kAccentBlue),
       dropdownMenuTheme: DropdownMenuThemeData(
         menuStyle: MenuStyle(
           shape: WidgetStateProperty.all(
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: kBgTop,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        titleTextStyle: const TextStyle(
+          fontFamily: 'JetBrains Mono',
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
+          fontSize: 17,
+        ),
+        contentTextStyle: const TextStyle(
+          fontFamily: 'JetBrains Mono',
+          color: Colors.white,
+          fontSize: 13,
+        ),
+      ),
+      snackBarTheme: SnackBarThemeData(
+        backgroundColor: kCellBg,
+        contentTextStyle: const TextStyle(
+          fontFamily: 'JetBrains Mono',
+          color: Colors.white,
+          fontSize: 12,
+        ),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: kCellBg,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        labelStyle: const TextStyle(
+          fontFamily: 'JetBrains Mono',
+          color: kTextMuted,
+          fontSize: 12,
+        ),
+        hintStyle: const TextStyle(
+          fontFamily: 'JetBrains Mono',
+          color: kTextMuted,
+          fontSize: 12,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: kCellBorder),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: kAccent, width: 1.5),
+        ),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          backgroundColor: kAccent,
+          foregroundColor: const Color(0xFF0A0F1C),
+          textStyle: const TextStyle(
+            fontFamily: 'JetBrains Mono',
+            fontWeight: FontWeight.w600,
+            fontSize: 13,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          foregroundColor: kAccent,
+          textStyle: const TextStyle(
+            fontFamily: 'JetBrains Mono',
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),
@@ -1196,126 +1275,218 @@ class _RoutinePageState extends State<RoutinePage> {
     final cells = routine[time];
     if (cells == null || dayIdx >= cells.length) return;
 
-    if (cells[dayIdx].isEmpty) {
-      await showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('No class'),
-          content: const Text('No class info for this slot.'),
-          actions: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
+    final dayName = dayIdx < days.length ? days[dayIdx] : '';
+
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setStateDialog) {
+          // Re-read cell every rebuild so deletions are reflected immediately
+          final cell = routine[time]![dayIdx];
+
+          return AlertDialog(
+            titlePadding: const EdgeInsets.fromLTRB(20, 18, 12, 4),
+            title: Row(
               children: [
-                TextButton(
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: kAccent.withAlpha(24),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: kAccent.withAlpha(80)),
+                  ),
+                  child:
+                      const Icon(Icons.class_rounded, color: kAccent, size: 20),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        dayName.isEmpty ? 'Class Info' : dayName,
+                        style: const TextStyle(
+                          fontFamily: 'JetBrains Mono',
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        time,
+                        style: TextStyle(
+                          fontFamily: 'JetBrains Mono',
+                          color: kTextMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (cell.isEmpty)
+                    _buildDialogInfoCard(
+                      icon: Icons.event_busy_rounded,
+                      title: 'Nothing scheduled',
+                      subtitle: 'This slot is free. Add a class or a friend.',
+                      accent: kTextMuted,
+                    )
+                  else ...[
+                    if (cell.course.isNotEmpty)
+                      _buildDialogInfoCard(
+                        icon: Icons.menu_book_rounded,
+                        title: cell.course,
+                        subtitle: cell.room.isEmpty ? 'No room' : cell.room,
+                        accent: courseColorFor(cell.course),
+                        onDelete: () async {
+                          routine[time]![dayIdx] =
+                              cell.copyWith(course: '', room: '');
+                          setState(() {});
+                          setStateDialog(() {});
+                          await _saveRoutineData();
+                        },
+                      ),
+                    if (cell.friends.isNotEmpty) ...[
+                      const Padding(
+                        padding:
+                            EdgeInsets.only(top: 14, bottom: 4, left: 4),
+                        child: Text(
+                          'FRIENDS',
+                          style: TextStyle(
+                            fontFamily: 'JetBrains Mono',
+                            color: kAccentBlue,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 11,
+                            letterSpacing: 1.6,
+                          ),
+                        ),
+                      ),
+                      for (int i = 0; i < cell.friends.length; i++)
+                        _buildDialogInfoCard(
+                          icon: Icons.person_rounded,
+                          title: cell.friends[i].name,
+                          subtitle: [
+                            if (cell.friends[i].course.isNotEmpty)
+                              cell.friends[i].course,
+                            if (cell.friends[i].room.isNotEmpty)
+                              cell.friends[i].room,
+                          ].join(' · '),
+                          accent: kAccentBlue,
+                          onDelete: () async {
+                            routine[time]![dayIdx].friends.removeAt(i);
+                            setState(() {});
+                            setStateDialog(() {});
+                            await _saveRoutineData();
+                          },
+                        ),
+                    ],
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close'),
+              ),
+              const SizedBox(width: 8),
+              if (cell.course.isEmpty)
+                TextButton.icon(
                   onPressed: () async {
                     Navigator.pop(context);
                     await _showAddClassDialog(dayIdx, time);
                   },
-                  style: TextButton.styleFrom(foregroundColor: kAccent),
-                  child: const Text('Add Class'),
+                  icon: const Icon(Icons.add_rounded, size: 18),
+                  label: const Text('Add Class'),
                 ),
-                const SizedBox(width: 8),
-                TextButton(
-                  onPressed: () async {
-                    Navigator.pop(context);
-                    await _showAddFriendDialog(dayIdx, time);
-                  },
-                  style: TextButton.styleFrom(foregroundColor: kAccent),
-                  child: const Text('Add Friend'),
+              TextButton.icon(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await _showAddFriendDialog(dayIdx, time);
+                },
+                icon: const Icon(Icons.person_add_rounded, size: 18),
+                label: const Text('Add Friend'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildDialogInfoCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color accent,
+    VoidCallback? onDelete,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
+      decoration: BoxDecoration(
+        color: kCellBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withAlpha(70)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: accent.withAlpha(22),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: accent, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontFamily: 'JetBrains Mono',
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 2,
                 ),
+                if (subtitle.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontFamily: 'JetBrains Mono',
+                      color: kTextMuted,
+                      fontSize: 11,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 2,
+                  ),
+                ],
               ],
             ),
-          ],
-        ),
-      );
-    } else {
-      await showDialog(
-        context: context,
-        builder: (context) => StatefulBuilder(
-          builder: (context, setStateDialog) {
-            // Re-read cell every rebuild so deletions are reflected immediately
-            final cell = routine[time]![dayIdx];
-            final infoWidgets = <Widget>[];
-
-            if (cell.course.isNotEmpty) {
-              infoWidgets.add(ListTile(
-                title: const Text('Class'),
-                subtitle: Text('${cell.course}\n${cell.room}'),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete, color: Colors.red),
-                  onPressed: () async {
-                    routine[time]![dayIdx] =
-                        cell.copyWith(course: '', room: '');
-                    setState(() {});
-                    setStateDialog(() {});
-                    await _saveRoutineData();
-                  },
-                ),
-              ));
-            }
-
-            if (cell.friends.isNotEmpty) {
-              infoWidgets.add(const Padding(
-                padding: EdgeInsets.only(top: 8.0),
-                child: Text('Friends:',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-              ));
-              for (int i = 0; i < cell.friends.length; i++) {
-                final friend = cell.friends[i];
-                infoWidgets.add(ListTile(
-                  title: Text(friend.name),
-                  subtitle: Text('${friend.course}\n${friend.room}'),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () async {
-                      routine[time]![dayIdx].friends.removeAt(i);
-                      setState(() {});
-                      setStateDialog(() {});
-                      await _saveRoutineData();
-                    },
-                  ),
-                ));
-              }
-            }
-
-            return AlertDialog(
-              title: const Text('Class Info'),
-              content: SingleChildScrollView(
-                child: Column(
-                    mainAxisSize: MainAxisSize.min, children: infoWidgets),
-              ),
-              actions: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    if (cell.course.isEmpty)
-                      ElevatedButton(
-                        onPressed: () async {
-                          Navigator.pop(context);
-                          await _showAddClassDialog(dayIdx, time);
-                        },
-                        style:
-                        TextButton.styleFrom(foregroundColor: kAccent),
-                        child: const Text('Add Class'),
-                      ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () async {
-                        Navigator.pop(context);
-                        await _showAddFriendDialog(dayIdx, time);
-                      },
-                      style:
-                      TextButton.styleFrom(foregroundColor: kAccent),
-                      child: const Text('Add Friend'),
-                    ),
-                  ],
-                ),
-              ],
-            );
-          },
-        ),
-      );
-    }
+          ),
+          if (onDelete != null)
+            IconButton(
+              onPressed: onDelete,
+              tooltip: 'Delete',
+              icon: const Icon(Icons.delete, color: Color(0xFFFF6B6B), size: 20),
+            ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showAddClassDialog(int dayIdx, String time) async {
@@ -1534,14 +1705,18 @@ class _RoutinePageState extends State<RoutinePage> {
   // ---------------------------------------------------------------------------
 
   InputDecoration _dropdownDecoration() => InputDecoration(
-    border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: BorderSide.none,
-    ),
-    contentPadding:
-    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
     filled: true,
-    fillColor: Colors.blueGrey[50],
+    fillColor: kCellBg,
+    contentPadding:
+    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: kCellBorder),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: kAccent),
+    ),
   );
 
   void _showSnackBar(String message) {
@@ -1576,6 +1751,8 @@ class _RoutinePageState extends State<RoutinePage> {
       body: WeeklyCalendarGrid(
         routineKey: _routineKey,
         onCellTap: _showCellDialog,
+        onImportSlip: _pickAdvisingSlipFile,
+        onAddSlot: () => _showAddTimeDialog(),
       ),
       floatingActionButton: Padding(
         padding: const EdgeInsets.only(bottom: 16.0, right: 8.0),
@@ -1586,7 +1763,9 @@ class _RoutinePageState extends State<RoutinePage> {
               key: _removeFabKey,
               heroTag: 'remove',
               onPressed: _showRemoveOptions,
+              tooltip: 'Remove',
               backgroundColor: Colors.red[700],
+              elevation: 6,
               child: const Icon(Icons.remove, color: Colors.white),
             ),
             const SizedBox(width: 16),
@@ -1594,7 +1773,9 @@ class _RoutinePageState extends State<RoutinePage> {
               key: _addFabKey,
               heroTag: 'add',
               onPressed: _showAddOptions,
+              tooltip: 'Add',
               backgroundColor: Colors.blue[900],
+              elevation: 6,
               child: const Icon(Icons.add, color: Colors.white),
             ),
             const SizedBox(width: 16),
@@ -1602,7 +1783,9 @@ class _RoutinePageState extends State<RoutinePage> {
               key: _saveFabKey,
               heroTag: 'save',
               onPressed: _showSaveOptions,
+              tooltip: 'Save / Export',
               backgroundColor: Colors.green[700],
+              elevation: 6,
               child: const Icon(Icons.arrow_downward, color: Colors.white),
             ),
           ],

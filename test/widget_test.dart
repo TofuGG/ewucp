@@ -39,33 +39,35 @@ void main() {
   testWidgets('first launch renders a blank grid', (WidgetTester tester) async {
     await tester.pumpWidget(MaterialApp(home: const app.RoutinePage()));
 
-    expect(find.text('Monday'), findsNothing);
-    expect(find.text('Sunday'), findsNothing);
+    expect(find.text('Mon'), findsNothing);
+    expect(find.text('Sun'), findsNothing);
   });
 
   testWidgets('RoutinePage renders days of the week', (WidgetTester tester) async {
     app.days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     await tester.pumpWidget(MaterialApp(home: const app.RoutinePage()));
 
-    expect(find.text('Monday'), findsOneWidget);
-    expect(find.text('Tuesday'), findsOneWidget);
-    expect(find.text('Wednesday'), findsOneWidget);
-    expect(find.text('Thursday'), findsOneWidget);
-    expect(find.text('Friday'), findsOneWidget);
-    expect(find.text('Saturday'), findsOneWidget);
-    expect(find.text('Sunday'), findsOneWidget);
+    expect(find.text('Mon'), findsOneWidget);
+    expect(find.text('Tue'), findsOneWidget);
+    expect(find.text('Wed'), findsOneWidget);
+    expect(find.text('Thu'), findsOneWidget);
+    expect(find.text('Fri'), findsOneWidget);
+    expect(find.text('Sat'), findsOneWidget);
+    expect(find.text('Sun'), findsOneWidget);
   });
 
   testWidgets('header shows time labels after data loads',
       (WidgetTester tester) async {
     await tester.pumpWidget(MaterialApp(home: const _GridHost()));
-    expect(find.text('10:10AM-12:10PM'), findsNothing);
+    expect(find.text('10:10'), findsNothing);
 
     app.times = ['10:10AM-12:10PM', '11:50AM-1:20PM'];
     await tester.pumpWidget(MaterialApp(home: const _GridHost()));
 
-    expect(find.text('10:10AM-12:10PM'), findsOneWidget);
-    expect(find.text('11:50AM-1:20PM'), findsOneWidget);
+    expect(find.text('10:10'), findsOneWidget);
+    expect(find.text('12:10'), findsOneWidget);
+    expect(find.text('11:50'), findsOneWidget);
+    expect(find.text('1:20'), findsOneWidget);
   });
 
   testWidgets('saved days are restored on launch', (WidgetTester tester) async {
@@ -82,10 +84,10 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: const app.RoutinePage()));
     await tester.pumpAndSettle();
 
-    expect(find.text('Sunday'), findsOneWidget);
-    expect(find.text('Monday'), findsOneWidget);
-    expect(find.text('Tuesday'), findsNothing);
-    expect(find.text('PHY109 (4)'), findsOneWidget);
+    expect(find.text('Sun'), findsOneWidget);
+    expect(find.text('Mon'), findsOneWidget);
+    expect(find.text('Tue'), findsNothing);
+    expect(find.text('PHY109'), findsOneWidget);
   });
 
   testWidgets('legacy saves without days reconstruct columns',
@@ -104,11 +106,11 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: const app.RoutinePage()));
     await tester.pumpAndSettle();
 
-    expect(find.text('Sunday'), findsOneWidget);
-    expect(find.text('Monday'), findsOneWidget);
-    expect(find.text('Tuesday'), findsOneWidget);
-    expect(find.text('Wednesday'), findsNothing);
-    expect(find.text('CSE110 (12)'), findsOneWidget);
+    expect(find.text('Sun'), findsOneWidget);
+    expect(find.text('Mon'), findsOneWidget);
+    expect(find.text('Tue'), findsOneWidget);
+    expect(find.text('Wed'), findsNothing);
+    expect(find.text('CSE110'), findsOneWidget);
   });
 
   testWidgets('saved routine with no content loads blank',
@@ -126,9 +128,10 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: const app.RoutinePage()));
     await tester.pumpAndSettle();
 
-    expect(find.text('Sunday'), findsNothing);
-    expect(find.text('Monday'), findsNothing);
-    expect(find.text('10:10AM-12:10PM'), findsOneWidget);
+    expect(find.text('Sun'), findsNothing);
+    expect(find.text('Mon'), findsNothing);
+    expect(find.text('10:10'), findsOneWidget);
+    expect(find.text('12:10'), findsOneWidget);
   });
 
   testWidgets('removing the last course hides the day columns',
@@ -143,18 +146,56 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: const app.RoutinePage()));
     await tester.pump();
 
-    expect(find.text('Sunday'), findsOneWidget);
-    expect(find.text('PHY109 (4)'), findsOneWidget);
+    expect(find.text('Sun'), findsOneWidget);
+    expect(find.text('PHY109'), findsOneWidget);
 
-    await tester.tap(find.text('PHY109 (4)'));
+    await tester.tap(find.text('PHY109'));
     await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.delete));
     await tester.pumpAndSettle();
     await tester.tapAt(const Offset(20, 20));
     await tester.pumpAndSettle();
 
-    expect(find.text('Sunday'), findsNothing);
-    expect(find.text('PHY109 (4)'), findsNothing);
-    expect(find.text('10:10AM-12:10PM'), findsOneWidget);
+    expect(find.text('Sun'), findsNothing);
+    expect(find.text('PHY109'), findsNothing);
+    expect(find.text('10:10'), findsOneWidget);
+    expect(find.text('12:10'), findsOneWidget);
+  });
+
+  testWidgets('full 7x8 grid fits a phone screen without overflow',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    app.times = [
+      '8:30am-10:00am',
+      '10:10am-11:40am',
+      '11:50am-1:20pm',
+      '1:30pm-3:00pm',
+      '3:10pm-4:40pm',
+      '4:50pm-6:20pm',
+      '4:50pm-6:50pm',
+      '4:50pm-7:50pm',
+    ];
+    app.days = [
+      'Sunday', 'Monday', 'Tuesday', 'Wednesday',
+      'Thursday', 'Friday', 'Saturday',
+    ];
+    for (final t in app.times) {
+      app.routine[t] = List.generate(app.days.length, (_) => app.RoutineCellData());
+    }
+    app.routine['8:30am-10:00am']![0] =
+        app.RoutineCellData(course: 'PHY109 (4)', room: '534');
+    app.routine['10:10am-11:40am']![1] =
+        app.RoutineCellData(course: 'CSE110 (12)', room: 'AB2-302');
+
+    await tester.pumpWidget(MaterialApp(home: const app.RoutinePage()));
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Sun'), findsOneWidget);
+    expect(find.text('PHY109'), findsOneWidget);
+    expect(find.text('CSE110'), findsOneWidget);
   });
 }
