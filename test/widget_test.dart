@@ -43,6 +43,26 @@ void main() {
     expect(find.text('Sun'), findsNothing);
   });
 
+  testWidgets('hamburger menu opens the left sidebar', (WidgetTester tester) async {
+    await tester.pumpWidget(MaterialApp(home: const app.RoutinePage()));
+
+    await tester.tap(find.byIcon(Icons.menu));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(
+        of: find.byType(Drawer),
+        matching: find.text('Tofu Routine'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Weekly Calendar'), findsOneWidget);
+    expect(find.text('Monthly Calendar'), findsOneWidget);
+    expect(find.text('Import to Calendar'), findsOneWidget);
+    expect(find.text('Import to Google Calendar'), findsOneWidget);
+    expect(find.text('Exit'), findsOneWidget);
+  });
+
   testWidgets('RoutinePage renders days of the week', (WidgetTester tester) async {
     app.days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     await tester.pumpWidget(MaterialApp(home: const app.RoutinePage()));

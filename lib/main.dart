@@ -10,158 +10,198 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:spreadsheet_decoder/spreadsheet_decoder.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'planner_core.dart';
 import 'calendar_view.dart';
 
-// ======= Global routine data =======
-Map<String, List<RoutineCellData>> routine = {};
-List<String> times = [];
-const List<String> kAllDays = [
-  'Sunday',
-  'Monday',
-  'Tuesday',
-  'Wednesday',
-  'Thursday',
-  'Friday',
-  'Saturday',
-];
-List<String> days = [];
+export 'planner_core.dart';
 
-// Shared day abbreviation map used for EWU advising slip parsing
-const Map<String, String> kDayMap = {
-  'S': 'Sunday',
-  'M': 'Monday',
-  'T': 'Tuesday',
-  'W': 'Wednesday',
-  'R': 'Thursday',
-};
-// ===================================
-
-// ======= Shared UI palette (base theme only) =======
-// A deep-navy "planner" palette with a warm highlighter-gold accent.
-// Note: the +/- / download FloatingActionButtons and the menus/dialogs
-// they open keep their original colors and are untouched by this palette.
-const Color kBgTop = Color(0xFF16213A);
-const Color kBgBottom = Color(0xFF0A0F1C);
-const Color kHeaderTop = Color(0xFF1C2C4E);
-const Color kHeaderBottom = Color(0xFF10182C);
-const Color kRowEven = Color(0xFF121B30);
-const Color kRowOdd = Color(0xFF0D1424);
-const Color kCellBg = Color(0xFF19233C);
-const Color kCellBorder = Color(0xFF2C3A5C);
-const Color kAccent = Color(0xFFA9E6F5);   // splash screen's light-blue circle
-const Color kAccentBlue = Color(0xFFF4E04D);   // splash screen's yellow circle
-const Color kTextMuted = Color(0xFFAEB8CE);
-// ===================================================
-
-// ======= Shared calendar layout constants =======
-// The grid is sized adaptively so the whole calendar fits on screen: the
-// day-label column grows with leftover width while time-slot columns and
-// day-row heights split the remaining space, clamped to comfortable minimums.
-// Used by both the RoutinePage state (logic) and the WeeklyCalendarGrid
-// (pure UI, see calendar_view.dart) so both stay in sync.
-const double kDayColWidth = 32; // min width of the day-label column
-const double kMaxDayColWidth = 56; // max width of the day-label column
-const double kMinTimeColWidth = 34; // min width of a time-slot column
-const double kMinRowHeight = 36; // min height of a day row
-const double kMaxRowHeight = 48; // max height of a day row
-const double kCellMargin = 2; // gutter between adjacent cells
-// ==================================================
+// =============================================================================
+// App entry — Material 3 theme
+//
+// The brand palette from planner_core.dart is promoted into a full Material 3
+// ColorScheme. Widgets are expected to pull every color from
+// Theme.of(context).colorScheme instead of raw Colors.* literals so the whole
+// app stays visually coherent and themable in one place.
+// =============================================================================
 
 void main() {
-  runApp(MaterialApp(
-    home: const StartupScreen(),
-    debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      useMaterial3: true,
+  runApp(const PlannerApp());
+}
+
+class PlannerApp extends StatelessWidget {
+  const PlannerApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = ColorScheme.fromSeed(
+      seedColor: kAccent,
       brightness: Brightness.dark,
-      scaffoldBackgroundColor: kBgBottom,
-      fontFamily: 'JetBrains Mono',
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: kAccent,
-        brightness: Brightness.dark,
-      ).copyWith(surface: kCellBg, primary: kAccent, secondary: kAccentBlue),
-      dropdownMenuTheme: DropdownMenuThemeData(
-        menuStyle: MenuStyle(
-          shape: WidgetStateProperty.all(
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          ),
-        ),
+    ).copyWith(
+      primary: kAccent,
+      onPrimary: kBgBottom,
+      secondary: kAccentBlue,
+      onSecondary: kBgBottom,
+      surface: kCellBg,
+      onSurface: const Color(0xFFF2F5FA),
+      onSurfaceVariant: kTextMuted,
+      surfaceContainerLowest: kBgBottom,
+      surfaceContainerLow: kRowOdd,
+      surfaceContainer: kRowEven,
+      surfaceContainerHigh: kBgTop,
+      surfaceContainerHighest: kHeaderTop,
+      outline: kCellBorder,
+      outlineVariant: kCellBorder,
+      error: const Color(0xFFFF6B6B),
+      onError: kBgBottom,
+    );
+
+    return MaterialApp(
+      title: 'Tofu Routine',
+      debugShowCheckedModeBanner: false,
+      // Respect OS text scaling but clamp it so the adaptive grid never breaks
+      // — tiny labels scale up while the whole calendar stays on screen.
+      builder: (context, child) => MediaQuery.withClampedTextScaling(
+        minScaleFactor: 1.0,
+        maxScaleFactor: 1.3,
+        child: child!,
       ),
-      dialogTheme: DialogThemeData(
-        backgroundColor: kBgTop,
-        surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        titleTextStyle: const TextStyle(
+      home: const StartupScreen(),
+      theme: _buildTheme(scheme),
+    );
+  }
+}
+
+ThemeData _buildTheme(ColorScheme scheme) {
+  final TextTheme textTheme =
+      ThemeData.dark().textTheme.apply(fontFamily: 'JetBrains Mono');
+
+  return ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.dark,
+    colorScheme: scheme,
+    scaffoldBackgroundColor: scheme.surfaceContainerLowest,
+    fontFamily: 'JetBrains Mono',
+    textTheme: textTheme,
+    splashFactory: InkSparkle.splashFactory,
+    dividerColor: scheme.outlineVariant,
+    appBarTheme: AppBarTheme(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      foregroundColor: scheme.onSurface,
+      titleTextStyle: textTheme.titleLarge?.copyWith(
+        color: scheme.onSurface,
+        fontWeight: FontWeight.bold,
+      ),
+    ),
+    cardTheme: CardThemeData(
+      color: scheme.surfaceContainerHigh,
+      surfaceTintColor: Colors.transparent,
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: scheme.surfaceContainerHigh,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      titleTextStyle: textTheme.titleLarge?.copyWith(
+        color: scheme.onSurface,
+        fontWeight: FontWeight.bold,
+        fontSize: 17,
+      ),
+      contentTextStyle: textTheme.bodyMedium?.copyWith(
+        color: scheme.onSurface,
+        fontSize: 13,
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: scheme.surfaceContainerHigh,
+      contentTextStyle: textTheme.bodySmall?.copyWith(
+        color: scheme.onSurface,
+        fontSize: 12,
+      ),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: scheme.surface,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      labelStyle: textTheme.bodySmall?.copyWith(
+        color: scheme.onSurfaceVariant,
+        fontSize: 12,
+      ),
+      hintStyle: textTheme.bodySmall?.copyWith(
+        color: scheme.onSurfaceVariant,
+        fontSize: 12,
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: scheme.outlineVariant),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: scheme.primary, width: 1.5),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: scheme.primary,
+        foregroundColor: scheme.onPrimary,
+        textStyle: textTheme.labelLarge?.copyWith(
           fontFamily: 'JetBrains Mono',
-          color: Colors.white,
-          fontWeight: FontWeight.bold,
-          fontSize: 17,
-        ),
-        contentTextStyle: const TextStyle(
-          fontFamily: 'JetBrains Mono',
-          color: Colors.white,
+          fontWeight: FontWeight.w600,
           fontSize: 13,
         ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
-      snackBarTheme: SnackBarThemeData(
-        backgroundColor: kCellBg,
-        contentTextStyle: const TextStyle(
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        foregroundColor: scheme.primary,
+        textStyle: textTheme.labelLarge?.copyWith(
           fontFamily: 'JetBrains Mono',
-          color: Colors.white,
-          fontSize: 12,
-        ),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: kCellBg,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        labelStyle: const TextStyle(
-          fontFamily: 'JetBrains Mono',
-          color: kTextMuted,
-          fontSize: 12,
-        ),
-        hintStyle: const TextStyle(
-          fontFamily: 'JetBrains Mono',
-          color: kTextMuted,
-          fontSize: 12,
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: kCellBorder),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: kAccent, width: 1.5),
-        ),
-      ),
-      filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(
-          backgroundColor: kAccent,
-          foregroundColor: const Color(0xFF0A0F1C),
-          textStyle: const TextStyle(
-            fontFamily: 'JetBrains Mono',
-            fontWeight: FontWeight.w600,
-            fontSize: 13,
-          ),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-          ),
-        ),
-      ),
-      textButtonTheme: TextButtonThemeData(
-        style: TextButton.styleFrom(
-          foregroundColor: kAccent,
-          textStyle: const TextStyle(
-            fontFamily: 'JetBrains Mono',
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
         ),
       ),
     ),
-  ));
+    floatingActionButtonTheme: FloatingActionButtonThemeData(
+      backgroundColor: scheme.primary,
+      foregroundColor: scheme.onPrimary,
+      elevation: 6,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    ),
+    dropdownMenuTheme: DropdownMenuThemeData(
+      menuStyle: MenuStyle(
+        backgroundColor: WidgetStateProperty.all(scheme.surfaceContainerHigh),
+        shape: WidgetStateProperty.all(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        ),
+      ),
+    ),
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: scheme.surfaceContainer,
+      surfaceTintColor: Colors.transparent,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+    ),
+    drawerTheme: DrawerThemeData(
+      backgroundColor: scheme.surfaceContainerHigh,
+      surfaceTintColor: Colors.transparent,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.horizontal(right: Radius.circular(20)),
+      ),
+    ),
+    listTileTheme: ListTileThemeData(
+      textColor: scheme.onSurface,
+      iconColor: scheme.onSurfaceVariant,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+  );
 }
 
 // ======= Startup / splash screen =======
@@ -179,15 +219,24 @@ class _StartupScreenState extends State<StartupScreen> {
     Future.delayed(const Duration(milliseconds: 1600), () {
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const RoutinePage()),
+        // Fade transition so the splash hands off to the planner smoothly.
+        PageRouteBuilder(
+          transitionDuration: const Duration(milliseconds: 350),
+          pageBuilder: (_, __, ___) => const RoutinePage(),
+          transitionsBuilder: (_, animation, __, child) => FadeTransition(
+            opacity: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+            child: child,
+          ),
+        ),
       );
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: kBgBottom,
+      backgroundColor: scheme.surfaceContainerLowest,
       body: Stack(
         children: [
           // Pastel circle bleeding off the top-left corner
@@ -198,7 +247,7 @@ class _StartupScreenState extends State<StartupScreen> {
               width: 220,
               height: 220,
               decoration: const BoxDecoration(
-                color: Color(0xFFA9E6F5),
+                color: kAccent,
                 shape: BoxShape.circle,
               ),
             ),
@@ -211,7 +260,7 @@ class _StartupScreenState extends State<StartupScreen> {
               width: 240,
               height: 240,
               decoration: const BoxDecoration(
-                color: Color(0xFFF4E04D),
+                color: kAccentBlue,
                 shape: BoxShape.circle,
               ),
             ),
@@ -221,17 +270,17 @@ class _StartupScreenState extends State<StartupScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
+                Icon(
                   Icons.history_toggle_off,
-                  color: Colors.white,
+                  color: scheme.primary,
                   size: 56,
                 ),
                 const SizedBox(height: 18),
-                const Text(
+                Text(
                   'Tofu Routine',
                   style: TextStyle(
                     fontFamily: 'JetBrains Mono',
-                    color: Colors.white,
+                    color: scheme.onSurface,
                     fontWeight: FontWeight.bold,
                     fontSize: 26,
                     letterSpacing: 0.5,
@@ -255,10 +304,8 @@ class RoutinePage extends StatefulWidget {
 }
 
 class _RoutinePageState extends State<RoutinePage> {
-  final GlobalKey _saveFabKey = GlobalKey();
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final GlobalKey _routineKey = GlobalKey();
-  final GlobalKey _addFabKey = GlobalKey();
-  final GlobalKey _removeFabKey = GlobalKey();
 
   final List<String> allTimes = const [
     '8:30am-10:00am',
@@ -897,84 +944,68 @@ class _RoutinePageState extends State<RoutinePage> {
 
     final result = await showDialog<String>(
       context: context,
-      builder: (context) => DropdownMenuTheme(
-        data: DropdownMenuThemeData(
-          menuStyle: MenuStyle(
-            backgroundColor: WidgetStatePropertyAll(Colors.blueGrey[900]),
-            shape: WidgetStatePropertyAll(
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            elevation: const WidgetStatePropertyAll(2),
-          ),
-        ),
-        child: StatefulBuilder(
-          builder: (context, setLocalState) => AlertDialog(
-            title: const Text('Add Time Slot'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                DropdownButtonFormField<String>(
-                  initialValue: selectedTime,
-                  isExpanded: true,
-                  decoration: _dropdownDecoration(),
-                  items: availableTimes
-                      .map((t) => DropdownMenuItem(value: t, child: Text(t)))
-                      .toList(),
-                  onChanged: (val) => setLocalState(() => selectedTime = val!),
-                ),
-                if (selectedTime == 'Custom') ...[
-                  const SizedBox(height: 12),
-                  TextField(
-                    decoration: InputDecoration(
-                      labelText: 'Custom Time',
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                    onChanged: (val) => customTime = val,
-                  ),
-                ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocalState) => AlertDialog(
+          title: const Text('Add Time Slot'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: selectedTime,
+                isExpanded: true,
+                decoration: _dropdownDecoration(),
+                items: availableTimes
+                    .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                    .toList(),
+                onChanged: (val) => setLocalState(() => selectedTime = val!),
+              ),
+              if (selectedTime == 'Custom') ...[
                 const SizedBox(height: 12),
-                DropdownButtonFormField<int>(
-                  initialValue: insertIndex,
-                  isExpanded: true,
-                  decoration: _dropdownDecoration(),
-                  items: [
-                    for (int i = 0; i <= times.length; i++)
-                      DropdownMenuItem(
-                        value: i,
-                        child: Text(
-                          i == times.length ? 'At end' : 'Before "${times[i]}"',
-                        ),
-                      ),
-                  ],
-                  onChanged: (val) => setLocalState(() => insertIndex = val!),
+                TextField(
+                  decoration: InputDecoration(
+                    labelText: 'Custom Time',
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                  ),
+                  onChanged: (val) => customTime = val,
                 ),
               ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                style: TextButton.styleFrom(foregroundColor: kAccent),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  final timeToAdd =
-                  selectedTime == 'Custom' ? customTime.trim() : selectedTime;
-                  if (timeToAdd.isEmpty || times.contains(timeToAdd)) {
-                    Navigator.pop(context);
-                    return;
-                  }
-                  Navigator.pop(context, '$timeToAdd|$insertIndex');
-                },
-                style: ElevatedButton.styleFrom(
-                  foregroundColor: kAccent,
-                  backgroundColor: Colors.blue,
-                ),
-                child: const Text('Add'),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                initialValue: insertIndex,
+                isExpanded: true,
+                decoration: _dropdownDecoration(),
+                items: [
+                  for (int i = 0; i <= times.length; i++)
+                    DropdownMenuItem(
+                      value: i,
+                      child: Text(
+                        i == times.length ? 'At end' : 'Before "${times[i]}"',
+                      ),
+                    ),
+                ],
+                onChanged: (val) => setLocalState(() => insertIndex = val!),
               ),
             ],
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final timeToAdd =
+                selectedTime == 'Custom' ? customTime.trim() : selectedTime;
+                if (timeToAdd.isEmpty || times.contains(timeToAdd)) {
+                  Navigator.pop(context);
+                  return;
+                }
+                Navigator.pop(context, '$timeToAdd|$insertIndex');
+              },
+              child: const Text('Add'),
+            ),
+          ],
         ),
       ),
     );
@@ -1019,21 +1050,16 @@ class _RoutinePageState extends State<RoutinePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(foregroundColor: kAccent),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
+            _destructiveButton(
+              label: 'Remove',
               onPressed: () {
                 times.removeWhere((t) => t == selectedTime);
                 routine.remove(selectedTime);
                 removed = true;
                 Navigator.pop(context);
               },
-              style: ElevatedButton.styleFrom(
-                foregroundColor: kAccent,
-                backgroundColor: Colors.red,
-              ),
-              child: const Text('Remove'),
             ),
           ],
         ),
@@ -1047,65 +1073,7 @@ class _RoutinePageState extends State<RoutinePage> {
     }
   }
 
-  // Estimates the rendered width of a popup menu from its item labels, so
-  // the menu can be centered on its FAB instead of assuming a fixed width.
-  double _estimateMenuWidth(List<String> labels) {
-    double maxTextWidth = 0;
-    for (final label in labels) {
-      final painter = TextPainter(
-        text: TextSpan(text: label, style: const TextStyle(fontSize: 14)),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      if (painter.width > maxTextWidth) maxTextWidth = painter.width;
-    }
-    // icon (24) + icon/text gap (8) + item's own horizontal padding (12*2)
-    // + a small buffer so the text never touches the pill's edge.
-    return maxTextWidth + 24 + 8 + 24 + 10;
-  }
-
-  void _showRemoveOptions() async {
-    final fabBox =
-    _removeFabKey.currentContext!.findRenderObject() as RenderBox;
-    final fabOffset = fabBox.localToGlobal(Offset.zero);
-    final fabSize = fabBox.size;
-    final screenSize = MediaQuery.of(context).size;
-    const double menuHeight = 208; // 4 items (48px/item + 16px menu padding)
-    const double gap = 12;
-    const double menuWidthStep = 56; // Material menu widths snap to this step
-    final menuWidth = (_estimateMenuWidth(['Manual', 'Advising Slip', 'Friend Slip']) / menuWidthStep).ceil() * menuWidthStep;
-    final buttonCenterX = fabOffset.dx + fabSize.width / 2;
-
-    final selected = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(
-        buttonCenterX - menuWidth / 2,
-        fabOffset.dy - menuHeight - gap,
-        screenSize.width - (buttonCenterX + menuWidth / 2),
-        screenSize.height - fabOffset.dy + gap,
-      ),
-      constraints: BoxConstraints.tightFor(width: menuWidth),
-      elevation: 8,
-      color: Colors.blueGrey[900],
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      items: [
-        _buildPopupItem('time', Icons.schedule, 'Time Slot', Colors.red,
-            width: menuWidth),
-        _buildPopupItem('day', Icons.calendar_view_day, 'Day', Colors.orange,
-            width: menuWidth),
-        _buildPopupItem('course', Icons.book, 'Course', Colors.purple,
-            width: menuWidth),
-        _buildPopupItem('all', Icons.delete_forever, 'All', Colors.grey,
-            width: menuWidth),
-      ],
-    );
-    if (!mounted) return;
-    if (selected == 'time') _showRemoveTimeSlotDialog();
-    if (selected == 'day') await _showRemoveDayDialog();
-    if (selected == 'course') await _showRemoveCourseDialog();
-    if (selected == 'all') await _showRemoveAllDialog();
-  }
-
-  Future<void> _showRemoveDayDialog() async {
+  void _showRemoveDayDialog() async {
     if (days.length <= 1) {
       _showSnackBar('At least one day must remain.');
       return;
@@ -1131,10 +1099,10 @@ class _RoutinePageState extends State<RoutinePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(foregroundColor: kAccent),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
+            _destructiveButton(
+              label: 'Remove',
               onPressed: () {
                 final idx = days.indexOf(selectedDay);
                 if (idx < 0) return;
@@ -1148,11 +1116,6 @@ class _RoutinePageState extends State<RoutinePage> {
                 removed = true;
                 Navigator.pop(context);
               },
-              style: ElevatedButton.styleFrom(
-                foregroundColor: kAccent,
-                backgroundColor: Colors.red,
-              ),
-              child: const Text('Remove'),
             ),
           ],
         ),
@@ -1166,7 +1129,7 @@ class _RoutinePageState extends State<RoutinePage> {
     }
   }
 
-  Future<void> _showRemoveCourseDialog() async {
+  void _showRemoveCourseDialog() async {
     final allCourses = <String>{};
     for (final entry in routine.entries) {
       for (final cell in entry.value) {
@@ -1201,10 +1164,10 @@ class _RoutinePageState extends State<RoutinePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(foregroundColor: kAccent),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
+            _destructiveButton(
+              label: 'Remove',
               onPressed: () {
                 for (final time in times) {
                   final cells = routine[time];
@@ -1218,11 +1181,6 @@ class _RoutinePageState extends State<RoutinePage> {
                 removed = true;
                 Navigator.pop(context);
               },
-              style: ElevatedButton.styleFrom(
-                foregroundColor: kAccent,
-                backgroundColor: Colors.red,
-              ),
-              child: const Text('Remove'),
             ),
           ],
         ),
@@ -1236,7 +1194,7 @@ class _RoutinePageState extends State<RoutinePage> {
     }
   }
 
-  Future<void> _showRemoveAllDialog() async {
+  void _showRemoveAllDialog() async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1245,16 +1203,11 @@ class _RoutinePageState extends State<RoutinePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Cancel'),
           ),
-          ElevatedButton(
+          _destructiveButton(
+            label: 'Clear All',
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              foregroundColor: kAccent,
-              backgroundColor: Colors.red,
-            ),
-            child: const Text('Clear All'),
           ),
         ],
       ),
@@ -1265,6 +1218,20 @@ class _RoutinePageState extends State<RoutinePage> {
     setState(() {});
     await _saveRoutineData();
     _showSnackBar('All data cleared.');
+  }
+
+  // A themed destructive action button so "Remove"/"Clear All" consistently
+  // use the error role instead of raw Colors.red.
+  Widget _destructiveButton({required String label, required VoidCallback onPressed}) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return FilledButton(
+      onPressed: onPressed,
+      style: FilledButton.styleFrom(
+        backgroundColor: scheme.error,
+        foregroundColor: scheme.onError,
+      ),
+      child: Text(label),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1286,46 +1253,7 @@ class _RoutinePageState extends State<RoutinePage> {
 
           return AlertDialog(
             titlePadding: const EdgeInsets.fromLTRB(20, 18, 12, 4),
-            title: Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: kAccent.withAlpha(24),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: kAccent.withAlpha(80)),
-                  ),
-                  child:
-                      const Icon(Icons.class_rounded, color: kAccent, size: 20),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        dayName.isEmpty ? 'Class Info' : dayName,
-                        style: const TextStyle(
-                          fontFamily: 'JetBrains Mono',
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        time,
-                        style: TextStyle(
-                          fontFamily: 'JetBrains Mono',
-                          color: kTextMuted,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+            title: _buildCellDialogTitle(dayName, time),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1336,7 +1264,7 @@ class _RoutinePageState extends State<RoutinePage> {
                       icon: Icons.event_busy_rounded,
                       title: 'Nothing scheduled',
                       subtitle: 'This slot is free. Add a class or a friend.',
-                      accent: kTextMuted,
+                      accent: Theme.of(context).colorScheme.onSurfaceVariant,
                     )
                   else ...[
                     if (cell.course.isNotEmpty)
@@ -1354,14 +1282,14 @@ class _RoutinePageState extends State<RoutinePage> {
                         },
                       ),
                     if (cell.friends.isNotEmpty) ...[
-                      const Padding(
+                      Padding(
                         padding:
-                            EdgeInsets.only(top: 14, bottom: 4, left: 4),
+                            const EdgeInsets.only(top: 14, bottom: 4, left: 4),
                         child: Text(
                           'FRIENDS',
                           style: TextStyle(
                             fontFamily: 'JetBrains Mono',
-                            color: kAccentBlue,
+                            color: Theme.of(context).colorScheme.secondary,
                             fontWeight: FontWeight.bold,
                             fontSize: 11,
                             letterSpacing: 1.6,
@@ -1378,7 +1306,7 @@ class _RoutinePageState extends State<RoutinePage> {
                             if (cell.friends[i].room.isNotEmpty)
                               cell.friends[i].room,
                           ].join(' · '),
-                          accent: kAccentBlue,
+                          accent: Theme.of(context).colorScheme.secondary,
                           onDelete: () async {
                             routine[time]![dayIdx].friends.removeAt(i);
                             setState(() {});
@@ -1421,6 +1349,49 @@ class _RoutinePageState extends State<RoutinePage> {
     );
   }
 
+  Widget _buildCellDialogTitle(String dayName, String time) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: scheme.primary.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: scheme.primary.withValues(alpha: 0.3)),
+          ),
+          child: Icon(Icons.class_rounded, color: scheme.primary, size: 20),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                dayName.isEmpty ? 'Class Info' : dayName,
+                style: TextStyle(
+                  fontFamily: 'JetBrains Mono',
+                  color: scheme.onSurface,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                time,
+                style: TextStyle(
+                  fontFamily: 'JetBrains Mono',
+                  color: scheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildDialogInfoCard({
     required IconData icon,
     required String title,
@@ -1428,20 +1399,21 @@ class _RoutinePageState extends State<RoutinePage> {
     required Color accent,
     VoidCallback? onDelete,
   }) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     return Container(
       margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
       decoration: BoxDecoration(
-        color: kCellBg,
+        color: scheme.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: accent.withAlpha(70)),
+        border: Border.all(color: accent.withValues(alpha: 0.28)),
       ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: accent.withAlpha(22),
+              color: accent.withValues(alpha: 0.09),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(icon, color: accent, size: 18),
@@ -1453,9 +1425,9 @@ class _RoutinePageState extends State<RoutinePage> {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: 'JetBrains Mono',
-                    color: Colors.white,
+                    color: scheme.onSurface,
                     fontWeight: FontWeight.bold,
                     fontSize: 13,
                   ),
@@ -1468,7 +1440,7 @@ class _RoutinePageState extends State<RoutinePage> {
                     subtitle,
                     style: TextStyle(
                       fontFamily: 'JetBrains Mono',
-                      color: kTextMuted,
+                      color: scheme.onSurfaceVariant,
                       fontSize: 11,
                     ),
                     overflow: TextOverflow.ellipsis,
@@ -1482,7 +1454,7 @@ class _RoutinePageState extends State<RoutinePage> {
             IconButton(
               onPressed: onDelete,
               tooltip: 'Delete',
-              icon: const Icon(Icons.delete, color: Color(0xFFFF6B6B), size: 20),
+              icon: Icon(Icons.delete, color: scheme.error, size: 20),
             ),
         ],
       ),
@@ -1513,10 +1485,9 @@ class _RoutinePageState extends State<RoutinePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Cancel'),
           ),
-          ElevatedButton(
+          FilledButton(
             onPressed: () async {
               if (course.trim().isNotEmpty || room.trim().isNotEmpty) {
                 routine[time]![dayIdx] = routine[time]![dayIdx].copyWith(
@@ -1528,7 +1499,6 @@ class _RoutinePageState extends State<RoutinePage> {
               }
               if (context.mounted) Navigator.pop(context);
             },
-            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Save'),
           ),
         ],
@@ -1566,10 +1536,9 @@ class _RoutinePageState extends State<RoutinePage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Cancel'),
           ),
-          ElevatedButton(
+          FilledButton(
             onPressed: () async {
               if (friendName.trim().isNotEmpty ||
                   friendCourse.trim().isNotEmpty ||
@@ -1584,7 +1553,6 @@ class _RoutinePageState extends State<RoutinePage> {
               }
               if (context.mounted) Navigator.pop(context);
             },
-            style: TextButton.styleFrom(foregroundColor: kAccent),
             child: const Text('Save'),
           ),
         ],
@@ -1593,131 +1561,169 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 
   // ---------------------------------------------------------------------------
-  // FAB menus
+  // Quick actions — single FAB hub (Add / Remove / Save)
   // ---------------------------------------------------------------------------
 
-  void _showSaveOptions() async {
-    final fabBox =
-    _saveFabKey.currentContext!.findRenderObject() as RenderBox;
-    final fabOffset = fabBox.localToGlobal(Offset.zero);
-    final fabSize = fabBox.size;
-    final screenSize = MediaQuery.of(context).size;
-    const double menuHeight = 112; // 2 items (48px/item + 16px menu padding)
-    const double gap = 12;
-    final menuWidth = _estimateMenuWidth(['Save as PNG', 'Save as PDF']);
-    final buttonCenterX = fabOffset.dx + fabSize.width / 2;
-
-    final selected = await showMenu<String>(
+  // One FAB replaces the old three-FAB cluster. It opens a grouped bottom
+  // sheet so every mutation/export action stays one tap away without
+  // competing floating buttons.
+  void _showQuickActions() {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    showModalBottomSheet<void>(
       context: context,
-      position: RelativeRect.fromLTRB(
-        buttonCenterX - menuWidth / 2,
-        fabOffset.dy - menuHeight - gap,
-        screenSize.width - (buttonCenterX + menuWidth / 2),
-        screenSize.height - fabOffset.dy + gap,
-      ),
-      elevation: 8,
-      color: Colors.blueGrey[900],
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      items: [
-        _buildPopupItem('save_png', Icons.image, 'Save as PNG', Colors.green),
-        _buildPopupItem(
-            'save_pdf', Icons.picture_as_pdf, 'Save as PDF', Colors.blue),
-      ],
-    );
-    if (!mounted) return;
-    if (selected == 'save_png') await _saveRoutineAsPng();
-    if (selected == 'save_pdf') await _saveRoutineAsPdf();
-  }
-
-  void _showAddOptions() async {
-    final fabBox =
-    _addFabKey.currentContext!.findRenderObject() as RenderBox;
-    final fabOffset = fabBox.localToGlobal(Offset.zero);
-    final fabSize = fabBox.size;
-    final screenSize = MediaQuery.of(context).size;
-    const double menuHeight = 160; // 3 items (48px/item + 16px menu padding)
-    const double gap = 12;
-    final menuWidth = _estimateMenuWidth(['Manual', 'Advising Slip', 'Friend Slip']);
-    final buttonCenterX = fabOffset.dx + fabSize.width / 2;
-
-    final selected = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(
-        buttonCenterX - menuWidth / 2,
-        fabOffset.dy - menuHeight - gap,
-        screenSize.width - (buttonCenterX + menuWidth / 2),
-        screenSize.height - fabOffset.dy + gap,
-      ),
-      elevation: 8,
-      color: Colors.blueGrey[900],
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      items: [
-        _buildPopupItem('manual', Icons.edit, 'Manual', Colors.green),
-        _buildPopupItem(
-            'advising', Icons.receipt_long, 'Advising Slip', Colors.blue),
-        _buildPopupItem(
-            'friend_slip', Icons.person_add, 'Friend Slip', Colors.teal),
-      ],
-    );
-    if (!mounted) return;
-    if (selected == 'manual') _showAddTimeDialog();
-    if (selected == 'advising') await _pickAdvisingSlipFile();
-    if (selected == 'friend_slip') await _pickFriendSlipFile();
-  }
-
-  PopupMenuItem<String> _buildPopupItem(
-      String value,
-      IconData icon,
-      String label,
-      MaterialColor color,
-      {
-      double? width,
-      }) {
-    return PopupMenuItem(
-      value: value,
-      padding: EdgeInsets.zero,
-      child: Material(
-        color: color[100],
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          splashColor: color[200],
-          highlightColor: color[300],
-          onTap: () => Navigator.pop(context, value),
-          child: Container(
-            width: width,
-            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-            child: Row(
-              children: [
-                Icon(icon, color: color[700]),
-                const SizedBox(width: 8),
-                Text(label, style: TextStyle(color: color[900])),
-              ],
-            ),
+      showDragHandle: true,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
           ),
+          child: SingleChildScrollView(
+            physics: const ClampingScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            // Column (not a ListView) so a downward pull on the options
+            // overscrolls at the top edge and the modal sheet dismisses,
+            // instead of the list swallowing the gesture.
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+              _sheetSection('Add to routine', scheme),
+              _sheetTile(
+                icon: Icons.edit_rounded,
+                label: 'Manual Entry',
+                accent: scheme.primary,
+                onTap: () => _runSheetAction(_showAddTimeDialog),
+              ),
+              _sheetTile(
+                icon: Icons.receipt_long_rounded,
+                label: 'Advising Slip',
+                accent: scheme.tertiary,
+                onTap: () => _runSheetAction(_pickAdvisingSlipFile),
+              ),
+              _sheetTile(
+                icon: Icons.person_add_alt_1_rounded,
+                label: 'Friend Slip',
+                accent: scheme.secondary,
+                onTap: () => _runSheetAction(_pickFriendSlipFile),
+              ),
+              _sheetSection('Remove', scheme),
+              _sheetTile(
+                icon: Icons.schedule_rounded,
+                label: 'Time Slot',
+                accent: scheme.error,
+                onTap: () => _runSheetAction(_showRemoveTimeSlotDialog),
+              ),
+              _sheetTile(
+                icon: Icons.calendar_view_day_rounded,
+                label: 'Day',
+                accent: scheme.error,
+                onTap: () => _runSheetAction(_showRemoveDayDialog),
+              ),
+              _sheetTile(
+                icon: Icons.book_rounded,
+                label: 'Course',
+                accent: scheme.error,
+                onTap: () => _runSheetAction(_showRemoveCourseDialog),
+              ),
+              _sheetTile(
+                icon: Icons.delete_forever_rounded,
+                label: 'All',
+                accent: scheme.error,
+                onTap: () => _runSheetAction(_showRemoveAllDialog),
+              ),
+              _sheetSection('Save', scheme),
+              _sheetTile(
+                icon: Icons.image_rounded,
+                label: 'Save as PNG',
+                accent: scheme.primary,
+                onTap: () => _runSheetAction(_saveRoutineAsPng),
+              ),
+              _sheetTile(
+                icon: Icons.picture_as_pdf_rounded,
+                label: 'Save as PDF',
+                accent: scheme.primary,
+                onTap: () => _runSheetAction(_saveRoutineAsPdf),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+  Widget _sheetSection(String title, ColorScheme scheme) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 18, bottom: 6),
+      child: Text(
+        title,
+        style: TextStyle(
+          fontFamily: 'JetBrains Mono',
+          color: scheme.secondary,
+          fontWeight: FontWeight.bold,
+          fontSize: 11,
+          letterSpacing: 1.6,
         ),
       ),
     );
+  }
+
+  Widget _sheetTile({
+    required IconData icon,
+    required String label,
+    required Color accent,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+      leading: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: accent.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: accent, size: 20),
+      ),
+      title: Text(
+        label,
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      trailing: const Icon(Icons.chevron_right_rounded, size: 18),
+      onTap: onTap,
+    );
+  }
+
+  void _runSheetAction(VoidCallback action) {
+    Navigator.of(context).pop();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      action();
+    });
   }
 
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
-  InputDecoration _dropdownDecoration() => InputDecoration(
-    filled: true,
-    fillColor: kCellBg,
-    contentPadding:
-    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-    enabledBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: const BorderSide(color: kCellBorder),
-    ),
-    focusedBorder: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: const BorderSide(color: kAccent),
-    ),
-  );
+  InputDecoration _dropdownDecoration() {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return InputDecoration(
+      filled: true,
+      fillColor: scheme.surface,
+      contentPadding:
+      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: scheme.outlineVariant),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: scheme.primary),
+      ),
+    );
+  }
 
   void _showSnackBar(String message) {
     if (!mounted) return;
@@ -1743,126 +1749,195 @@ class _RoutinePageState extends State<RoutinePage> {
   // Build
   // ---------------------------------------------------------------------------
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kBgBottom,
-      appBar: const CalendarHeaderBar(),
-      body: WeeklyCalendarGrid(
-        routineKey: _routineKey,
-        onCellTap: _showCellDialog,
-        onImportSlip: _pickAdvisingSlipFile,
-        onAddSlot: () => _showAddTimeDialog(),
-      ),
-      floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 16.0, right: 8.0),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+  Widget _buildDrawer() {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return Drawer(
+      child: SafeArea(
+        child: Column(
           children: [
-            FloatingActionButton(
-              key: _removeFabKey,
-              heroTag: 'remove',
-              onPressed: _showRemoveOptions,
-              tooltip: 'Remove',
-              backgroundColor: Colors.red[700],
-              elevation: 6,
-              child: const Icon(Icons.remove, color: Colors.white),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [scheme.surfaceContainerHighest, scheme.surfaceContainerHigh],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                border: Border(
+                  bottom: BorderSide(
+                    color: scheme.primary.withValues(alpha: 0.5),
+                    width: 1.5,
+                  ),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: scheme.primary.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: scheme.primary.withValues(alpha: 0.35),
+                      ),
+                    ),
+                    child: Icon(Icons.history_toggle_off,
+                        color: scheme.primary, size: 26),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Tofu Routine',
+                          style: TextStyle(
+                            fontFamily: 'JetBrains Mono',
+                            color: scheme.onSurface,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 19,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'EWU COURSE PLANNER',
+                          style: TextStyle(
+                            fontFamily: 'JetBrains Mono',
+                            color: scheme.primary,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 10,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(width: 16),
-            FloatingActionButton(
-              key: _addFabKey,
-              heroTag: 'add',
-              onPressed: _showAddOptions,
-              tooltip: 'Add',
-              backgroundColor: Colors.blue[900],
-              elevation: 6,
-              child: const Icon(Icons.add, color: Colors.white),
-            ),
-            const SizedBox(width: 16),
-            FloatingActionButton(
-              key: _saveFabKey,
-              heroTag: 'save',
-              onPressed: _showSaveOptions,
-              tooltip: 'Save / Export',
-              backgroundColor: Colors.green[700],
-              elevation: 6,
-              child: const Icon(Icons.arrow_downward, color: Colors.white),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                children: [
+                  _drawerItem(
+                    icon: Icons.calendar_view_week,
+                    label: 'Weekly Calendar',
+                    color: scheme.primary,
+                    onTap: () => Navigator.of(context).pop(),
+                  ),
+                  _drawerItem(
+                    icon: Icons.calendar_view_month,
+                    label: 'Monthly Calendar',
+                    color: scheme.tertiary,
+                    soon: true,
+                  ),
+                  _drawerItem(
+                    icon: Icons.event_note,
+                    label: 'Import to Calendar',
+                    color: scheme.secondary,
+                    soon: true,
+                  ),
+                  _drawerItem(
+                    icon: Icons.event_available,
+                    label: 'Import to Google Calendar',
+                    color: scheme.secondary,
+                    soon: true,
+                  ),
+                  _drawerItem(
+                    icon: Icons.logout,
+                    label: 'Exit',
+                    color: scheme.error,
+                    onTap: () => _runDrawerAction(() => SystemNavigator.pop()),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
       ),
     );
   }
+
+  // Drawer item. Unavailable features render disabled with a "Soon" chip so
+  // they never behave like dead-end affordances.
+  Widget _drawerItem({
+    required IconData icon,
+    required String label,
+    required Color color,
+    VoidCallback? onTap,
+    bool soon = false,
+  }) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final bool enabled = onTap != null;
+    return ListTile(
+      enabled: enabled,
+      leading: Icon(icon, color: enabled ? color : color.withValues(alpha: 0.55)),
+      title: Text(
+        label,
+        style: TextStyle(
+          fontFamily: 'JetBrains Mono',
+          color: scheme.onSurface,
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      trailing: soon
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                'Soon',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: scheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            )
+          : Icon(
+              Icons.chevron_right,
+              color: scheme.onSurfaceVariant.withValues(alpha: 0.5),
+              size: 18,
+            ),
+      onTap: onTap,
+    );
+  }
+
+  void _runDrawerAction(VoidCallback action) {
+    Navigator.of(context).pop();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      action();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      key: _scaffoldKey,
+      appBar: CalendarHeaderBar(
+        onMenuTap: () => _scaffoldKey.currentState?.openDrawer(),
+      ),
+      drawer: _buildDrawer(),
+      body: WeeklyCalendarGrid(
+        routineKey: _routineKey,
+        onCellTap: _showCellDialog,
+        onImportSlip: _pickAdvisingSlipFile,
+        onAddSlot: () => _showAddTimeDialog(),
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _showQuickActions,
+        tooltip: 'Actions',
+        child: const Icon(Icons.more_horiz_rounded),
+      ),
+    );
+  }
 }
-
-// =============================================================================
-// Data models
-// =============================================================================
-
-class RoutineCellData {
-  final String course;
-  final String room;
-  final List<FriendData> friends;
-
-  RoutineCellData({
-    this.course = '',
-    this.room = '',
-    List<FriendData>? friends,
-  }) : friends = friends ?? [];
-
-  bool get isEmpty =>
-      course.trim().isEmpty && room.trim().isEmpty && friends.isEmpty;
-
-  RoutineCellData copyWith({
-    String? course,
-    String? room,
-    List<FriendData>? friends,
-  }) =>
-      RoutineCellData(
-        course: course ?? this.course,
-        room: room ?? this.room,
-        friends: friends ?? List<FriendData>.from(this.friends),
-      );
-
-  Map<String, dynamic> toJson() => {
-    'course': course,
-    'room': room,
-    'friends': friends.map((f) => f.toJson()).toList(),
-  };
-
-  factory RoutineCellData.fromJson(Map<String, dynamic> json) =>
-      RoutineCellData(
-        course: json['course'] as String? ?? '',
-        room: json['room'] as String? ?? '',
-        friends: (json['friends'] as List<dynamic>? ?? [])
-            .map((f) => FriendData.fromJson(f as Map<String, dynamic>))
-            .toList(),
-      );
-}
-
-class FriendData {
-  final String name;
-  final String course;
-  final String room;
-
-  const FriendData({this.name = '', this.course = '', this.room = ''});
-
-  Map<String, dynamic> toJson() =>
-      {'name': name, 'course': course, 'room': room};
-
-  factory FriendData.fromJson(Map<String, dynamic> json) => FriendData(
-    name: json['name'] as String? ?? '',
-    course: json['course'] as String? ?? '',
-    room: json['room'] as String? ?? '',
-  );
-}
-
-// =============================================================================
-// Routine cell presentation widget
-// =============================================================================
-// Note: RoutineCell now lives in calendar_view.dart alongside the rest of
-// the calendar's UI layer.
-// =============================================================================
 
 class _PendingSlot {
   final String time;

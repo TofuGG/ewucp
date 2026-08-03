@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'main.dart';
+import 'planner_core.dart';
 
 // Palette assigned to courses. Kept distinct/high-contrast against the dark
 // navy background; colors are stable per course name so the same course is
@@ -23,21 +23,49 @@ String _courseKey(String course) {
   return t.split(RegExp(r'\s+')).first;
 }
 
-// Maps every distinct course code in the routine to a palette color, sorted
-// alphabetically so the assignment is deterministic across rebuilds.
-Map<String, Color> _courseColors() {
-  final names = <String>{};
+// A lightweight "routine content version" hash. Only course labels affect the
+// color assignment, so the version tracks cell counts and course strings. The
+// VM caches String.hashCode, so computing this stays cheap, letting
+// _courseColors() skip its regex-heavy set/sort/build path on every unrelated
+// rebuild (theme change, dialog open, plain setState).
+int _routineVersion() {
+  var hash = 17;
+  hash = hash * 31 + routine.length;
   for (final cells in routine.values) {
+    hash = hash * 31 + cells.length;
     for (final c in cells) {
-      final n = _courseKey(c.course);
-      if (n.isNotEmpty) names.add(n);
+      hash = hash * 31 + c.course.length;
+      hash = hash * 31 + c.course.hashCode;
     }
   }
-  final sorted = names.toList()..sort();
-  return {
-    for (var i = 0; i < sorted.length; i++)
-      sorted[i]: _coursePalette[i % _coursePalette.length],
-  };
+  return hash;
+}
+
+int _cachedVersion = -1;
+Map<String, Color>? _cachedCourseColors;
+
+// Maps every distinct course code in the routine to a palette color, sorted
+// alphabetically so the assignment is deterministic across rebuilds. Results
+// are memoized against _routineVersion() so repeated lookups during rebuilds
+// don't redo the work.
+Map<String, Color> _courseColors() {
+  final version = _routineVersion();
+  if (_cachedCourseColors == null || version != _cachedVersion) {
+    final names = <String>{};
+    for (final cells in routine.values) {
+      for (final c in cells) {
+        final n = _courseKey(c.course);
+        if (n.isNotEmpty) names.add(n);
+      }
+    }
+    final sorted = names.toList()..sort();
+    _cachedCourseColors = {
+      for (var i = 0; i < sorted.length; i++)
+        sorted[i]: _coursePalette[i % _coursePalette.length],
+    };
+    _cachedVersion = version;
+  }
+  return _cachedCourseColors!;
 }
 
 // Public helper so the dialogs in main.dart can color a course card with the
@@ -51,10 +79,10 @@ Color courseColorFor(String course) {
 // Calendar UI layer
 //
 // This file contains ONLY presentation / layout widgets for the weekly
-// calendar. It reads the shared app state (routine / times / days) and the
-// shared color palette from main.dart, but holds no business logic itself —
-// all data mutation, persistence, dialogs, and FAB behavior stay in
-// main.dart's _RoutinePageState untouched.
+// calendar. It reads the shared app state and brand palette from
+// planner_core.dart and the Material 3 ColorScheme from the ambient Theme, but
+// holds no business logic itself — all data mutation, persistence, dialogs,
+// and FAB behavior stay in main.dart's _RoutinePageState untouched.
 //
 // Layout model: the calendar is designed to fit the whole grid on screen.
 // The day-label column grows from kDayColWidth up to kMaxDayColWidth using
@@ -97,31 +125,46 @@ String _dayShortName(String name) {
   return short[name] ?? (name.isEmpty ? name : name.substring(0, 3));
 }
 
+// A human-readable accessibility label describing a single calendar slot.
+String _cellSemanticsLabel(RoutineCellData cell, String time) {
+  if (cell.isEmpty) return 'Empty time slot at $time.';
+  final parts = <String>[
+    if (cell.course.trim().isNotEmpty) cell.course.trim(),
+    if (cell.room.trim().isNotEmpty) 'room ${cell.room.trim()}',
+    if (cell.friends.isNotEmpty)
+      '${cell.friends.length} friend${cell.friends.length == 1 ? '' : 's'}',
+  ];
+  return '${parts.join(', ')} at $time.';
+}
+
 // ------------------------------------------------------------------------
 // App bar
 // ------------------------------------------------------------------------
 class CalendarHeaderBar extends StatelessWidget
     implements PreferredSizeWidget {
-  const CalendarHeaderBar({super.key});
+  const CalendarHeaderBar({super.key, this.onMenuTap});
+
+  final VoidCallback? onMenuTap;
 
   @override
   Size get preferredSize => const Size.fromHeight(76);
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     return Container(
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [kHeaderTop, kHeaderBottom],
+        gradient: LinearGradient(
+          colors: [scheme.surfaceContainerHighest, scheme.surfaceContainerHigh],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         border: Border(
-          bottom: BorderSide(color: kAccent.withAlpha(130), width: 2),
+          bottom: BorderSide(color: scheme.primary.withValues(alpha: 0.5), width: 2),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withAlpha(90),
+            color: Colors.black.withValues(alpha: 0.35),
             blurRadius: 12,
             offset: const Offset(0, 4),
           ),
@@ -133,14 +176,19 @@ class CalendarHeaderBar extends StatelessWidget
           child: Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(9),
+                padding: EdgeInsets.zero,
                 decoration: BoxDecoration(
-                  color: kAccent.withAlpha(28),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: kAccent.withAlpha(90)),
+                  color: scheme.primary.withValues(alpha: 0.11),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: scheme.primary.withValues(alpha: 0.35)),
                 ),
-                child:
-                    const Icon(Icons.calendar_month_rounded, color: kAccent, size: 22),
+                child: IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: onMenuTap,
+                  tooltip: 'Menu',
+                  icon: Icon(Icons.menu, color: scheme.primary, size: 22),
+                ),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -148,11 +196,11 @@ class CalendarHeaderBar extends StatelessWidget
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Text(
+                    Text(
                       'Tofu Routine',
                       style: TextStyle(
                         fontFamily: 'JetBrains Mono',
-                        color: Colors.white,
+                        color: scheme.onSurface,
                         fontWeight: FontWeight.bold,
                         fontSize: 21,
                         letterSpacing: 0.8,
@@ -162,7 +210,7 @@ class CalendarHeaderBar extends StatelessWidget
                       'EWU COURSE PLANNER',
                       style: TextStyle(
                         fontFamily: 'JetBrains Mono',
-                        color: kAccent.withAlpha(210),
+                        color: scheme.primary.withValues(alpha: 0.82),
                         fontWeight: FontWeight.w600,
                         fontSize: 11,
                         letterSpacing: 2.2,
@@ -198,10 +246,11 @@ class WeeklyCalendarGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [kBgTop, kBgBottom],
+          colors: [scheme.surfaceContainerHigh, scheme.surfaceContainerLowest],
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
         ),
@@ -236,7 +285,7 @@ class WeeklyCalendarGrid extends StatelessWidget {
           final double tableW = dayColW + times.length * timeColW;
 
           // Row heights fill the body, clamped to a comfortable range. The
-          // bottom padding clears the floating FAB row.
+          // bottom padding clears the floating FAB.
           const double vPadTop = 10;
           const double vPadBottom = 88;
           const double rowOuter = 8; // 3 top + 3 bottom padding + 2px border
@@ -259,22 +308,26 @@ class WeeklyCalendarGrid extends StatelessWidget {
 
           final Map<String, Color> courseColors = _courseColors();
 
-          final Widget grid = Padding(
-            padding:
-                const EdgeInsets.fromLTRB(hPad, vPadTop, hPad, vPadBottom),
-            child: Column(
-              children: [
-                _CalendarColumnHeader(dayColW: dayColW),
-                const SizedBox(height: _kRowGap),
-                ...days.asMap().entries.map((entry) => _CalendarDayRow(
-                      dayIndex: entry.key,
-                      dayName: days[entry.key],
-                      dayColW: dayColW,
-                      rowH: rowH,
-                      courseColors: courseColors,
-                      onCellTap: onCellTap,
-                    )),
-              ],
+          final Widget grid = Semantics(
+            container: true,
+            label: 'Weekly course calendar',
+            child: Padding(
+              padding:
+                  const EdgeInsets.fromLTRB(hPad, vPadTop, hPad, vPadBottom),
+              child: Column(
+                children: [
+                  _CalendarColumnHeader(dayColW: dayColW),
+                  const SizedBox(height: _kRowGap),
+                  ...days.asMap().entries.map((entry) => _CalendarDayRow(
+                        dayIndex: entry.key,
+                        dayName: days[entry.key],
+                        dayColW: dayColW,
+                        rowH: rowH,
+                        courseColors: courseColors,
+                        onCellTap: onCellTap,
+                      )),
+                ],
+              ),
             ),
           );
 
@@ -307,6 +360,7 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
@@ -316,30 +370,29 @@ class _EmptyState extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [kHeaderTop, kHeaderBottom],
+                gradient: LinearGradient(
+                  colors: [scheme.surfaceContainerHighest, scheme.surfaceContainerHigh],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
                 shape: BoxShape.circle,
-                border: Border.all(color: kAccent.withAlpha(80), width: 2),
+                border: Border.all(color: scheme.primary.withValues(alpha: 0.3), width: 2),
                 boxShadow: [
                   BoxShadow(
-                    color: kAccent.withAlpha(30),
+                    color: scheme.primary.withValues(alpha: 0.12),
                     blurRadius: 18,
                     offset: const Offset(0, 6),
                   ),
                 ],
               ),
-              child:
-                  const Icon(Icons.calendar_month_rounded, color: kAccent, size: 44),
+              child: Icon(Icons.calendar_month_rounded, color: scheme.primary, size: 44),
             ),
             const SizedBox(height: 22),
-            const Text(
+            Text(
               'No classes yet',
               style: TextStyle(
                 fontFamily: 'JetBrains Mono',
-                color: Colors.white,
+                color: scheme.onSurface,
                 fontWeight: FontWeight.bold,
                 fontSize: 20,
                 letterSpacing: 0.5,
@@ -351,7 +404,7 @@ class _EmptyState extends StatelessWidget {
               'Import your advising slip to auto-build\nyour weekly routine, or add time slots\nmanually.',
               style: TextStyle(
                 fontFamily: 'JetBrains Mono',
-                color: kTextMuted,
+                color: scheme.onSurfaceVariant,
                 fontSize: 12,
                 height: 1.6,
               ),
@@ -376,7 +429,9 @@ class _EmptyState extends StatelessWidget {
               const SizedBox(height: 8),
               TextButton.icon(
                 onPressed: onAddSlot,
-                style: TextButton.styleFrom(foregroundColor: kAccentBlue),
+                style: TextButton.styleFrom(
+                  foregroundColor: scheme.secondary,
+                ),
                 icon: const Icon(Icons.add_rounded, size: 18),
                 label: const Text(
                   'Add Time Slot',
@@ -402,18 +457,19 @@ class _CalendarColumnHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     return SizedBox(
       height: _kHeaderHeight,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 4),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            colors: [kHeaderTop, kHeaderBottom],
+          gradient: LinearGradient(
+            colors: [scheme.surfaceContainerHighest, scheme.surfaceContainerHigh],
             begin: Alignment.centerLeft,
             end: Alignment.centerRight,
           ),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: kAccent.withAlpha(60)),
+          border: Border.all(color: scheme.primary.withValues(alpha: 0.24)),
         ),
         child: Row(
           children: [
@@ -421,7 +477,7 @@ class _CalendarColumnHeader extends StatelessWidget {
               width: dayColW,
               child: Center(
                 child: Icon(Icons.schedule_rounded,
-                    color: kAccent.withAlpha(200), size: 16),
+                    color: scheme.primary.withValues(alpha: 0.78), size: 16),
               ),
             ),
             ...times.map((t) => Expanded(
@@ -441,15 +497,16 @@ class _TimeLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     final parts = _timeParts(time);
     if (parts.length == 1) {
       return FittedBox(
         fit: BoxFit.scaleDown,
         child: Text(
           parts[0],
-          style: const TextStyle(
+          style: TextStyle(
             fontFamily: 'JetBrains Mono',
-            color: Colors.white,
+            color: scheme.onSurface,
             fontWeight: FontWeight.bold,
             fontSize: 11,
           ),
@@ -465,9 +522,9 @@ class _TimeLabel extends StatelessWidget {
           fit: BoxFit.scaleDown,
           child: Text(
             parts[0],
-            style: const TextStyle(
+            style: TextStyle(
               fontFamily: 'JetBrains Mono',
-              color: Colors.white,
+              color: scheme.onSurface,
               fontWeight: FontWeight.bold,
               fontSize: 12,
               height: 1.15,
@@ -481,7 +538,7 @@ class _TimeLabel extends StatelessWidget {
             parts[1],
             style: TextStyle(
               fontFamily: 'JetBrains Mono',
-              color: kAccent.withAlpha(200),
+              color: scheme.primary.withValues(alpha: 0.78),
               fontSize: 10,
               height: 1.15,
             ),
@@ -512,13 +569,14 @@ class _CalendarDayRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     return Container(
       margin: const EdgeInsets.only(bottom: _kRowGap),
       padding: const EdgeInsets.symmetric(vertical: 3),
       decoration: BoxDecoration(
-        color: dayIndex.isEven ? kRowEven : kRowOdd,
+        color: dayIndex.isEven ? scheme.surfaceContainer : scheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withAlpha(10)),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.25)),
       ),
       child: Row(
         children: [
@@ -535,7 +593,7 @@ class _CalendarDayRow extends StatelessWidget {
                       fontFamily: 'JetBrains Mono',
                       fontWeight: FontWeight.w700,
                       fontSize: 12,
-                      color: dayIndex.isEven ? Colors.white : kAccent,
+                      color: dayIndex.isEven ? scheme.onSurface : scheme.primary,
                     ),
                     textAlign: TextAlign.center,
                     maxLines: 1,
@@ -552,6 +610,7 @@ class _CalendarDayRow extends StatelessWidget {
             return Expanded(
               child: _CalendarCell(
                 cell: cell,
+                time: t,
                 height: rowH,
                 accent: courseColors[_courseKey(cell.course)] ?? kAccent,
                 onTap: () => onCellTap(dayIndex, t),
@@ -566,12 +625,14 @@ class _CalendarDayRow extends StatelessWidget {
 
 class _CalendarCell extends StatelessWidget {
   final RoutineCellData cell;
+  final String time;
   final double height;
   final Color accent;
   final VoidCallback onTap;
 
   const _CalendarCell({
     required this.cell,
+    required this.time,
     required this.height,
     required this.accent,
     required this.onTap,
@@ -579,53 +640,61 @@ class _CalendarCell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     final bool filled = !cell.isEmpty;
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: SizedBox(
-        height: height,
-        child: Stack(
-          children: [
-            if (!filled)
-              Positioned.fill(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(
-                    horizontal: kCellMargin / 2,
-                    vertical: 2,
+    // Every slot is described for screen readers so a bare GestureDetector is
+    // never the only affordance.
+    return Semantics(
+      label: _cellSemanticsLabel(cell, time),
+      button: true,
+      child: GestureDetector(
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: SizedBox(
+          height: height,
+          child: Stack(
+            children: [
+              if (!filled)
+                Positioned.fill(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: kCellMargin / 2,
+                      vertical: 2,
+                    ),
+                    child: CustomPaint(
+                      painter: _DashedBorderPainter(color: scheme.outlineVariant),
+                    ),
                   ),
-                  child:
-                      CustomPaint(painter: _DashedBorderPainter(color: kCellBorder)),
                 ),
+              Container(
+                margin: EdgeInsets.symmetric(
+                  horizontal: kCellMargin / 2,
+                  vertical: 2,
+                ),
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                decoration: BoxDecoration(
+                  color: filled
+                      ? Color.alphaBlend(accent.withValues(alpha: 0.08), scheme.surface)
+                      : scheme.surface.withValues(alpha: 0.55),
+                  borderRadius: BorderRadius.circular(10),
+                  border: filled
+                      ? Border(left: BorderSide(color: accent, width: 3))
+                      : null,
+                  boxShadow: filled
+                      ? [
+                          BoxShadow(
+                            color: accent.withValues(alpha: 0.1),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          ),
+                        ]
+                      : null,
+                ),
+                child: RoutineCell(cell, accent: accent),
               ),
-            Container(
-              margin: EdgeInsets.symmetric(
-                horizontal: kCellMargin / 2,
-                vertical: 2,
-              ),
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 2),
-              decoration: BoxDecoration(
-                color: filled
-                    ? Color.alphaBlend(accent.withAlpha(20), kCellBg)
-                    : kCellBg.withAlpha(140),
-                borderRadius: BorderRadius.circular(10),
-                border: filled
-                    ? Border(left: BorderSide(color: accent, width: 3))
-                    : null,
-                boxShadow: filled
-                    ? [
-                        BoxShadow(
-                          color: accent.withAlpha(25),
-                          blurRadius: 6,
-                          offset: const Offset(0, 2),
-                        ),
-                      ]
-                    : null,
-              ),
-              child: RoutineCell(cell, accent: accent),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -690,17 +759,19 @@ class RoutineCell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
     if (data.course.trim().isNotEmpty) {
-      return Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Text(
+      // Whole block wrapped in a scaling FittedBox so the 10-11px labels never
+      // overflow a compact row; each line still ellipsizes as a fallback.
+      return FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
               _courseKey(data.course),
               style: _monoStyle.copyWith(
-                color: Colors.white,
+                color: scheme.onSurface,
                 fontWeight: FontWeight.bold,
                 fontSize: 11,
                 height: 1.15,
@@ -708,82 +779,83 @@ class RoutineCell extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-          ),
-          if (data.room.trim().isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 1),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
+            if (data.room.trim().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.place_outlined, size: 9, color: kTextMuted),
+                    Icon(Icons.place_outlined,
+                        size: 10, color: scheme.onSurfaceVariant),
                     const SizedBox(width: 2),
                     Text(
                       data.room,
-                      style:
-                          _monoStyle.copyWith(color: kTextMuted, fontSize: 9),
+                      style: _monoStyle.copyWith(
+                          color: scheme.onSurfaceVariant, fontSize: 10),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),
               ),
-            ),
-          if (data.friends.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                decoration: BoxDecoration(
-                  color: kAccentBlue.withAlpha(30),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.group_rounded,
-                        size: 9, color: kAccentBlue),
-                    const SizedBox(width: 3),
-                    Text(
-                      '${data.friends.length}',
-                      style: _monoStyle.copyWith(
-                          color: kAccentBlue,
-                          fontSize: 9,
-                          fontWeight: FontWeight.w600),
-                      maxLines: 1,
-                    ),
-                  ],
+            if (data.friends.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: scheme.secondary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.group_rounded,
+                          size: 10, color: scheme.secondary),
+                      const SizedBox(width: 3),
+                      Text(
+                        '${data.friends.length}',
+                        style: _monoStyle.copyWith(
+                            color: scheme.secondary,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       );
     } else if (data.friends.isNotEmpty) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
-          color: kAccentBlue.withAlpha(30),
+          color: scheme.secondary.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(20),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.group_rounded, size: 10, color: kAccentBlue),
+            Icon(Icons.group_rounded, size: 11, color: scheme.secondary),
             const SizedBox(width: 3),
             Text(
               '${data.friends.length}',
               style: _monoStyle.copyWith(
-                  color: kAccentBlue,
-                  fontSize: 10,
+                  color: scheme.secondary,
+                  fontSize: 11,
                   fontWeight: FontWeight.w600),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
       );
     } else {
-      return Icon(Icons.add_circle_outline, color: kCellBorder, size: 16);
+      return Icon(Icons.add_circle_outline, color: scheme.outline, size: 16);
     }
   }
 }

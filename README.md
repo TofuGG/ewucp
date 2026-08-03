@@ -9,8 +9,24 @@ A university course planner for EWU students with friend class management. Impor
 - **Manual Editing** — Add/remove time slots, add classes and friends to individual cells
 - **Remove Options** — Remove individual time slots, days, courses (across all slots), or clear all data
 - **Export** — Save your routine as PNG image or PDF document
-- **Persistence** — Your routine data is saved automatically with `SharedPreferences`
-- **Responsive Layout** — Adapts to window size via `LayoutBuilder`
+- **Sidebar Menu** — The hamburger button in the header opens a left sidebar with **Weekly Calendar**, **Monthly Calendar**, **Import to Calendar**, **Import to Google Calendar**, and **Exit**
+- **Persistence** — Your routine data is saved automatically with `SharedPreferences` (zlib-compressed JSON)
+- **Responsive Grid** — The whole weekly calendar fits on screen; scrolling is only a fallback on very small screens
+- **Accessibility** — Every calendar slot carries a screen-reader label describing its course, room, and friends
+
+## UI & Design
+
+- **Palette** — Deep-navy "planner" theme: `#16213A → #0A0F1C` background gradient, navy header gradient, light-blue `#A9E6F5` accent + warm gold `#F4E04D`
+- **Theming** — The brand palette is promoted into a full Material 3 `ColorScheme`; every widget pulls its colors from `Theme.of(context)` instead of hardcoding literals
+- **Typography** — JetBrains Mono monospace throughout, Material 3 dark theme
+- **Header** — App bar with a compact hamburger menu button, app title, and "EWU COURSE PLANNER" tagline
+- **Sidebar** — A rounded left drawer with the app branding and the navigation items listed above; each item closes the drawer before running its action
+- **Calendar grid** — Days as rows (3-letter labels: Sun/Mon/Tue/…), time slots as columns. Row heights and column widths are computed from the available space so the entire grid is visible at once.
+- **Compact cells** — Each cell shows the base course code (e.g. `PHY109`), room number, and a gold friend-count pill. Tap any cell to open a dialog with the full details (course + section, room, day/time, and each friend's course/room).
+- **Color coding** — Every course gets a stable color from the palette; a lecture and its lab share the same color.
+- **Empty state** — When the routine is empty, a friendly screen offers **Import Advising Slip** and **Add Time Slot** actions.
+- **FABs** — Red **−** (remove), blue **+** (add), green **↓** (save/export), each opening a centered popup menu.
+- **Text scaling** — OS text scaling is respected but clamped so the adaptive grid never overflows.
 
 ## Quick Start
 
@@ -22,6 +38,18 @@ flutter run
 Select a connected device (Android / iOS / Windows / macOS / Linux) to launch the app.
 
 ## Usage
+
+### Sidebar Navigation
+
+Tap the hamburger icon (top-left) to open the sidebar:
+
+| Item | Action |
+|------|--------|
+| **Weekly Calendar** | Show the weekly grid (current view) |
+| **Monthly Calendar** | Monthly view *(coming soon)* |
+| **Import to Calendar** | Import routine into a calendar *(coming soon)* |
+| **Import to Google Calendar** | Import routine into Google Calendar *(coming soon)* |
+| **Exit** | Close the app |
 
 ### Adding Your Schedule
 
@@ -77,8 +105,9 @@ Tap the **↓** button → **Save as PNG** or **Save as PDF**.
 - **Language:** Dart 3.x
 - **Storage:** `shared_preferences`
 - **Excel Parsing:** `spreadsheet_decoder`
-- **PDF Generation:** `pdf` + `printing`
+- **PDF Generation:** `pdf`
 - **File Handling:** `file_picker` + `path_provider`
+- **Permissions:** `permission_handler`
 
 ## Building
 
